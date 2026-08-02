@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Search } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
 import { relativeTime, servicePorts } from '../lib/format'
-import { Empty, ErrorNote, Loading, Panel, StatusDot } from '../components/ui'
+import EnsureForm from '../components/EnsureForm'
+import { Button, Empty, ErrorNote, Loading, Panel, StatusDot } from '../components/ui'
 
 type SortKey = 'port' | 'name' | 'project' | 'updated'
 
@@ -12,6 +13,7 @@ export default function Services() {
   const [query, setQuery] = useState('')
   const [project, setProject] = useState<string | null>(null)
   const [sort, setSort] = useState<SortKey>('port')
+  const [ensureOpen, setEnsureOpen] = useState(false)
 
   const services = useQuery({ queryKey: queryKeys.services, queryFn: api.services })
   const pool = useQuery({ queryKey: queryKeys.pool, queryFn: api.pool })
@@ -97,6 +99,11 @@ export default function Services() {
             </FilterChip>
           ))}
         </div>
+
+        <Button variant="primary" onClick={() => setEnsureOpen(true)} className="shrink-0">
+          <Plus size={14} />
+          新建服务
+        </Button>
       </div>
 
       <Panel className="overflow-hidden">
@@ -108,7 +115,7 @@ export default function Services() {
             hint={
               query || project
                 ? '换个关键词，或清除项目筛选'
-                : '用 svcctl ensure 申请端口后会自动出现在这里'
+                : '点右上角「新建服务」分配端口，或用 svcctl ensure'
             }
           />
         ) : (
@@ -199,6 +206,8 @@ export default function Services() {
             : ''}
         </div>
       )}
+
+      <EnsureForm open={ensureOpen} onClose={() => setEnsureOpen(false)} />
     </div>
   )
 }

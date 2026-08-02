@@ -25,7 +25,17 @@ def _run(args: list[str], *, input_text: str | None = None) -> subprocess.Comple
 def daemon(tmp_path: Path):
     data_dir = tmp_path / "apr"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "apr", "--data-dir", str(data_dir), "serve", "--daemon"],
+        [
+            sys.executable,
+            "-m",
+            "apr",
+            "--data-dir",
+            str(data_dir),
+            "serve",
+            "--daemon",
+            # Don't inherit live config's web.enabled (port 17989 may be taken).
+            "--no-web",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

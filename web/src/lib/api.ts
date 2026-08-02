@@ -28,6 +28,7 @@ export interface Overview {
 }
 
 export type AllocationState = 'reserved' | 'released'
+export type ResourceType = 'single' | 'block' | 'count'
 
 export interface AllocatedPort {
   resource_name: string
@@ -96,6 +97,83 @@ export interface PortLookup {
   allocation: { id: string; allocation_name: string; state: AllocationState } | null
 }
 
+export interface WithinRange {
+  start: number
+  end: number
+}
+
+export interface ResourceSpec {
+  name: string
+  type: ResourceType
+  size?: number
+  count?: number
+  contiguous?: boolean
+  port_names?: string[]
+  preferred_port?: number
+  strict_preferred?: boolean
+  within?: WithinRange
+}
+
+export interface AgentContext {
+  type?: string | null
+  project_id?: string | null
+}
+
+export interface ServiceInput {
+  key: string
+  instance?: string | null
+  name?: string | null
+  description?: string | null
+  code_path?: string | null
+  working_directory?: string | null
+  start_command?: string | null
+}
+
+export interface EnsureRequest {
+  agent?: AgentContext | null
+  service: ServiceInput
+  allocation_name?: string
+  resources: ResourceSpec[]
+}
+
+export interface EnsureResponse {
+  service_id: string
+  allocation_id: string
+  existing: boolean
+  sticky: boolean
+  ports: Record<string, number>
+  blocks: Record<string, { start: number; end: number } | Record<string, number>>
+  availability: Record<string, { state: string; pid?: number | null; command?: string | null }>
+}
+
+export interface ServiceCreateRequest {
+  agent?: AgentContext | null
+  service: ServiceInput
+}
+
+export interface ServiceUpdateRequest {
+  name?: string | null
+  description?: string | null
+  code_path?: string | null
+  working_directory?: string | null
+  start_command?: string | null
+}
+
+export interface ReleaseResult {
+  allocation_id: string
+  state: AllocationState
+  released_at: string | null
+  release_reason: string | null
+  ports_history: AllocatedPort[]
+}
+
+export interface DeleteServiceResult {
+  service_id: string
+  deleted: boolean
+  reason?: string | null
+  [key: string]: unknown
+}
+
 /* ------------------------------------------------------------------ errors */
 
 /** Business error codes from `apr.domain.errors.ErrorCode`. */
@@ -110,6 +188,8 @@ export const ERROR_MESSAGES: Record<string, string> = {
   SERVICE_NOT_FOUND: '服务不存在',
   ALLOCATION_NOT_FOUND: '分配不存在',
   INTERNAL_ERROR: '服务端内部错误',
+  NETWORK_ERROR: '无法连接 Registry',
+  INVALID_RESPONSE: '响应不是合法 JSON',
 }
 
 export class AprApiError extends Error {
@@ -127,6 +207,16 @@ export class AprApiError extends Error {
   get label(): string {
     return ERROR_MESSAGES[this.code] ?? this.message
   }
+}
+
+/** Best-effort Chinese label for anything thrown by the client. */
+export function errorLabel(error: unknown): string {
+  if (error instanceof AprApiError) return error.label
+  if (error && typeof error === 'object' && 'label' in error) {
+    return String((error as { label: string }).label)
+  }
+  if (error instanceof Error) return error.message
+  return String(error)
 }
 
 /* ------------------------------------------------------------------ client */
@@ -182,6 +272,48 @@ export const api = {
     request<{ services: Service[] }>('/v1/services').then((r) => r.services),
   service: (id: string) => request<Service>(`/v1/services/${id}`),
   port: (port: number) => request<PortLookup>(`/v1/ports/${port}`),
+
+  ensure: (body: EnsureRequest) =>
+    request<EnsureResponse>('/v1/allocations/ensure', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  createService: (body: ServiceCreateRequest) =>
+    request<Service>('/v1/services', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  patchService: (id: string, body: ServiceUpdateRequest) =>
+    request<Service>(`/v1/services/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  deleteService: (id: string, reason?: string) =>
+    request<DeleteServiceResult>(`/v1/services/${id}`, {
+      method: 'DELETE',
+      body: reason ? JSON.stringify({ reason }) : undefined,
+    }),
+
+  releaseAllocation: (id: string, reason?: string) =>
+    request<ReleaseResult>(`/v1/allocations/${id}/release`, {
+      method: 'POST',
+      body: reason ? JSON.stringify({ reason }) : undefined,
+    }),
+
+  deleteAllocation: (id: string, opts?: { force?: boolean; reason?: string }) => {
+    const force = opts?.force ?? true
+    const q = force ? '' : '?force=false'
+    return request<{ allocation_id: string; deleted: boolean }>(
+      `/v1/allocations/${id}${q}`,
+      {
+        method: 'DELETE',
+        body: opts?.reason ? JSON.stringify({ reason: opts.reason }) : undefined,
+      },
+    )
+  },
 }
 
 /* ------------------------------------------------------------- query utils */
@@ -193,4 +325,21 @@ export const queryKeys = {
   services: ['services'] as const,
   service: (id: string) => ['service', id] as const,
   port: (port: number) => ['port', port] as const,
+}
+
+/** Invalidate every list/detail view that shows services or ports. */
+export function invalidateServiceViews(
+  client: { invalidateQueries: (opts: { queryKey: readonly unknown[] }) => Promise<unknown> },
+  serviceId?: string,
+) {
+  const tasks = [
+    client.invalidateQueries({ queryKey: queryKeys.services }),
+    client.invalidateQueries({ queryKey: queryKeys.overview }),
+    client.invalidateQueries({ queryKey: queryKeys.pool }),
+    client.invalidateQueries({ queryKey: queryKeys.listeners }),
+  ]
+  if (serviceId) {
+    tasks.push(client.invalidateQueries({ queryKey: queryKeys.service(serviceId) }))
+  }
+  return Promise.all(tasks)
 }

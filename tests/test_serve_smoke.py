@@ -25,6 +25,9 @@ def test_serve_daemon_and_healthz(tmp_path: Path) -> None:
             str(data_dir),
             "serve",
             "--daemon",
+            # Isolate from ~/.config/apr/config.yaml web.enabled (live registry
+            # may already own 127.0.0.1:17989).
+            "--no-web",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

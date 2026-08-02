@@ -1,9 +1,26 @@
-import { Link, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Terminal } from 'lucide-react'
-import { api, queryKeys } from '../lib/api'
+import { useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, Pencil, Plus, Terminal, Trash2 } from 'lucide-react'
+import {
+  api,
+  invalidateServiceViews,
+  queryKeys,
+  type Allocation,
+  type Service,
+} from '../lib/api'
 import { absoluteTime, relativeTime } from '../lib/format'
-import { ErrorNote, Loading, Panel, PanelHeader, StatusDot } from '../components/ui'
+import EditServiceForm from '../components/EditServiceForm'
+import EnsureForm from '../components/EnsureForm'
+import {
+  Button,
+  ConfirmDialog,
+  ErrorNote,
+  Loading,
+  Panel,
+  PanelHeader,
+  StatusDot,
+} from '../components/ui'
 
 /** Preview of `start_command` with {{ports.x}} resolved — phase 4 will run this. */
 function renderCommand(command: string, ports: Record<string, number>): string {
@@ -23,6 +40,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export default function ServiceDetail() {
   const { id = '' } = useParams()
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+
+  const [editOpen, setEditOpen] = useState(false)
+  const [ensureOpen, setEnsureOpen] = useState(false)
+  const [releaseTarget, setReleaseTarget] = useState<Allocation | null>(null)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [actionError, setActionError] = useState<unknown>(null)
+
   const service = useQuery({
     queryKey: queryKeys.service(id),
     queryFn: () => api.service(id),
@@ -31,6 +57,65 @@ export default function ServiceDetail() {
   const listenersQuery = useQuery({
     queryKey: queryKeys.listeners,
     queryFn: () => api.listeners(),
+  })
+
+  const releaseMut = useMutation({
+    mutationFn: (alloc: Allocation) =>
+      api.releaseAllocation(alloc.id, 'released from web ui'),
+    onMutate: async (alloc) => {
+      setActionError(null)
+      await qc.cancelQueries({ queryKey: queryKeys.service(id) })
+      const previous = qc.getQueryData<Service>(queryKeys.service(id))
+      if (previous) {
+        qc.setQueryData<Service>(queryKeys.service(id), {
+          ...previous,
+          allocations: previous.allocations.map((a) =>
+            a.id === alloc.id
+              ? {
+                  ...a,
+                  state: 'released',
+                  released_at: new Date().toISOString(),
+                  release_reason: 'released from web ui',
+                }
+              : a,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError: (err, _alloc, ctx) => {
+      if (ctx?.previous) qc.setQueryData(queryKeys.service(id), ctx.previous)
+      setActionError(err)
+    },
+    onSuccess: async () => {
+      setReleaseTarget(null)
+      await invalidateServiceViews(qc, id)
+    },
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: () => api.deleteService(id, 'deleted from web ui'),
+    onMutate: async () => {
+      setActionError(null)
+      await qc.cancelQueries({ queryKey: queryKeys.services })
+      const previous = qc.getQueryData<Service[]>(queryKeys.services)
+      if (previous) {
+        qc.setQueryData<Service[]>(
+          queryKeys.services,
+          previous.filter((s) => s.id !== id),
+        )
+      }
+      return { previous }
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx?.previous) qc.setQueryData(queryKeys.services, ctx.previous)
+      setActionError(err)
+    },
+    onSuccess: async () => {
+      setDeleteOpen(false)
+      await invalidateServiceViews(qc)
+      navigate('/services')
+    },
   })
 
   if (service.isError) return <ErrorNote error={service.error} />
@@ -61,6 +146,20 @@ export default function ServiceDetail() {
           <StatusDot live={anyLive} />
           <h2 className="text-xl">{s.name}</h2>
           <span className="chip">{s.id}</span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => setEnsureOpen(true)}>
+              <Plus size={14} />
+              申请端口
+            </Button>
+            <Button variant="secondary" onClick={() => setEditOpen(true)}>
+              <Pencil size={14} />
+              编辑
+            </Button>
+            <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+              <Trash2 size={14} />
+              删除
+            </Button>
+          </div>
         </div>
         {s.description && <p className="mt-2 text-sm text-muted">{s.description}</p>}
       </div>
@@ -199,6 +298,18 @@ export default function ServiceDetail() {
                 <span className="ml-auto text-[11px] text-faint">
                   {relativeTime(alloc.created_at)}
                 </span>
+                {alloc.state === 'reserved' && (
+                  <Button
+                    variant="ghost"
+                    className="text-xs text-danger"
+                    onClick={() => {
+                      setActionError(null)
+                      setReleaseTarget(alloc)
+                    }}
+                  >
+                    释放
+                  </Button>
+                )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
                 {alloc.ports.map((p) => (
@@ -216,6 +327,54 @@ export default function ServiceDetail() {
           ))}
         </ul>
       </Panel>
+
+      <EditServiceForm open={editOpen} onClose={() => setEditOpen(false)} service={s} />
+      <EnsureForm open={ensureOpen} onClose={() => setEnsureOpen(false)} service={s} />
+
+      <ConfirmDialog
+        open={releaseTarget != null}
+        onClose={() => {
+          if (!releaseMut.isPending) setReleaseTarget(null)
+        }}
+        onConfirm={() => {
+          if (releaseTarget) releaseMut.mutate(releaseTarget)
+        }}
+        title="释放端口分配"
+        body={
+          releaseTarget ? (
+            <>
+              将释放分配{' '}
+              <span className="font-mono text-fg">{releaseTarget.allocation_name}</span>
+              （{releaseTarget.id}），端口会回到池中。此操作可在之后重新 ensure，但
+              已占用的端口号不一定能拿回。
+            </>
+          ) : null
+        }
+        confirmLabel="确认释放"
+        danger
+        loading={releaseMut.isPending}
+        error={actionError}
+      />
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => {
+          if (!deleteMut.isPending) setDeleteOpen(false)
+        }}
+        onConfirm={() => deleteMut.mutate()}
+        title="删除服务"
+        body={
+          <>
+            将<strong className="text-fg">永久删除</strong>服务{' '}
+            <span className="font-mono text-fg">{s.name}</span> 及其全部端口分配与历史记录。
+            此操作不可撤销。
+          </>
+        }
+        confirmLabel="确认删除"
+        danger
+        loading={deleteMut.isPending}
+        error={actionError}
+      />
     </div>
   )
 }
