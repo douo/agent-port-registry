@@ -7,6 +7,8 @@
 | 产品需求 | `Agent_Port_Registry_Local_PRD_v1.0.md` |
 | 架构与选型 | `docs/architecture.md` |
 | 实现计划 | `docs/plan.md` |
+| v2 计划（Web UI / 主从 / 转发） | `docs/plan-v2-webui.md` |
+| **交接文档** | `docs/HANDOFF.md` |
 | 进度 | `docs/progress.md` |
 | 验收 | `docs/acceptance.md` |
 | Agent Skills | `skills/` |
