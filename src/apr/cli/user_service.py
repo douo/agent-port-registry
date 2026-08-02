@@ -51,6 +51,9 @@ web:
 process_management:
   enabled: false
   stop_timeout_seconds: 10
+  # Prefer the user's login+interactive shell ($SHELL -lic) so PATH matches a
+  # normal terminal. Set false to inherit only the thin systemd/daemon env.
+  user_shell_env: true
 
 port_pool:
   start: {DEFAULT_PORT_POOL_START}

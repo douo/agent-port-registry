@@ -219,6 +219,7 @@ export const ERROR_MESSAGES: Record<string, string> = {
   PROCESS_MANAGEMENT_DISABLED: '进程管理未开启（需 process_management.enabled）',
   PROCESS_ALREADY_RUNNING: '服务进程已在运行',
   PROCESS_NOT_RUNNING: '服务进程未在运行',
+  PROCESS_START_FAILED: '进程启动失败（已立即退出，见日志）',
   NO_START_COMMAND: '服务未配置启动命令',
   INTERNAL_ERROR: '服务端内部错误',
   NETWORK_ERROR: '无法连接 Registry',

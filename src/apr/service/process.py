@@ -3,11 +3,15 @@
 Safety: the whole feature is gated by ``process_management.enabled`` (default
 false). When enabled the registry can spawn arbitrary shell commands that were
 stored as ``start_command`` — only suitable for trusted loopback use.
+
+By default commands run under the user's login+interactive shell
+(``$SHELL -lic``) so PATH and other profile settings match a normal terminal.
 """
 
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import signal
 import subprocess
@@ -27,6 +31,9 @@ from apr.store.repository import Repository
 _PORT_PLACEHOLDER = re.compile(r"\{\{\s*ports\.([A-Za-z0-9_-]+)\s*\}\}")
 
 LIVE_STATES = frozenset({"starting", "running"})
+
+# How long after spawn we wait to catch "command not found" / immediate crash.
+_STARTUP_PROBE_SECONDS = 0.5
 
 
 def _utcnow() -> str:
@@ -75,15 +82,77 @@ def port_map_for_service(repo: Repository, service_id: str) -> dict[str, int]:
     return ports
 
 
+def resolve_user_shell() -> str:
+    """Prefer passwd shell, then $SHELL, then /bin/sh."""
+    try:
+        shell = pwd.getpwuid(os.getuid()).pw_shell
+        if shell and Path(shell).is_file():
+            return shell
+    except (KeyError, OSError):
+        pass
+    env_shell = os.environ.get("SHELL")
+    if env_shell and Path(env_shell).is_file():
+        return env_shell
+    return "/bin/sh"
+
+
+def _exit_code_from_status(status: int) -> int:
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return -os.WTERMSIG(status)
+    return status
+
+
+def _try_reap(pid: int) -> int | None:
+    """If *pid* is our child and has exited (incl. zombie), reap and return code."""
+    try:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return None
+    except OSError:
+        return None
+    if waited == 0:
+        return None
+    if waited == pid:
+        return _exit_code_from_status(status)
+    return None
+
+
+def _proc_state_letter(pid: int) -> str | None:
+    """Return the single-letter State from /proc/pid/status, or None if gone."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+        return None
+    for line in text.splitlines():
+        if line.startswith("State:"):
+            parts = line.split()
+            return parts[1] if len(parts) >= 2 else None
+    return None
+
+
 def _pid_alive(pid: int | None) -> bool:
+    """True only for a still-running process (zombies count as dead)."""
     if pid is None or pid <= 0:
         return False
+
+    # Reap our own zombies first — os.kill(pid, 0) succeeds on zombies.
+    if _try_reap(pid) is not None:
+        return False
+
+    state = _proc_state_letter(pid)
+    if state is None:
+        return False
+    if state == "Z":
+        # Zombie we are not the parent of (or reap failed); treat as dead.
+        return False
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Exists but we cannot signal it — treat as alive.
         return True
     return True
 
@@ -105,6 +174,7 @@ class ManagedProcess:
     stopped_at: str | None
 
     def to_dict(self) -> dict[str, Any]:
+        live = self.state in LIVE_STATES
         return {
             "id": self.id,
             "service_id": self.service_id,
@@ -119,7 +189,7 @@ class ManagedProcess:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "stopped_at": self.stopped_at,
-            "alive": _pid_alive(self.pid) if self.state in LIVE_STATES else False,
+            "alive": _pid_alive(self.pid) if live else False,
         }
 
 
@@ -177,35 +247,29 @@ class ProcessManager:
         return _row_process(row) if row else None
 
     def reconcile(self, service_id: str) -> ManagedProcess | None:
-        """If a 'live' row's pid is gone, mark it exited/failed and free the slot."""
+        """If a 'live' row's pid is gone/zombie, mark it exited and free the slot."""
         live = self.get_live(service_id)
         if live is None:
             return None
         if _pid_alive(live.pid):
             return live
+        exit_code = self._try_wait_exit(live.pid)
         self._mark(
             live.id,
             state="exited",
-            exit_code=self._try_wait_exit(live.pid),
+            exit_code=exit_code,
             last_error="process no longer running (reconciled on access)",
+            stopped=True,
         )
         return None
 
     def _try_wait_exit(self, pid: int | None) -> int | None:
         if pid is None:
             return None
-        try:
-            waited_pid, status = os.waitpid(pid, os.WNOHANG)
-            if waited_pid == 0:
-                return None
-            if os.WIFEXITED(status):
-                return os.WEXITSTATUS(status)
-            if os.WIFSIGNALED(status):
-                return -os.WTERMSIG(status)
-        except ChildProcessError:
-            return None
-        except OSError:
-            return None
+        code = _try_reap(pid)
+        if code is not None:
+            return code
+        # Not our child or already reaped — no exit code available.
         return None
 
     def _mark(
@@ -252,6 +316,41 @@ class ProcessManager:
         assert row is not None
         return _row_process(row)
 
+    def _spawn(self, command: str, *, cwd: str | None, log_f: Any) -> subprocess.Popen:
+        """Spawn *command* under the user shell when configured."""
+        use_user_shell = getattr(self.config, "process_user_shell_env", True)
+        if use_user_shell:
+            shell = resolve_user_shell()
+            # -l: login (profile / .zprofile), -i: interactive (.zshrc) so PATH
+            # matches a normal terminal. argv form — never go through /bin/sh -c.
+            # TERM=dumb: .zshrc often calls tput/zle; without a TTY that only
+            # pollutes the service log.
+            child_env = os.environ.copy()
+            child_env.setdefault("TERM", "dumb")
+            log_f.write(f"--- shell: {shell} -lic ---\n")
+            log_f.flush()
+            return subprocess.Popen(
+                [shell, "-lic", command],
+                cwd=cwd,
+                env=child_env,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+        # Legacy: thin daemon env + /bin/sh -c
+        return subprocess.Popen(
+            command,
+            shell=True,
+            cwd=cwd,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+
     def start(self, service_id: str) -> ManagedProcess:
         self._require_enabled()
         svc = self.repo.get_service(service_id)
@@ -263,7 +362,7 @@ class ProcessManager:
                 f"Service {service_id} has no start_command; set one before starting.",
             )
 
-        # Reconcile orphans from a previous daemon lifetime.
+        # Reconcile orphans from a previous daemon lifetime / immediate crash.
         existing = self.reconcile(service_id)
         if existing is not None:
             raise AprError(
@@ -324,24 +423,9 @@ class ProcessManager:
             log_f.write(f"\n--- apr start {now} pid pending ---\n$ {command}\n")
             log_f.flush()
 
-            # shell=True: start_command is free-form (same as systemd ExecStart-ish).
-            # start_new_session: own process group so stop can signal the whole tree.
-            proc = subprocess.Popen(
-                command,
-                shell=True,
-                cwd=cwd,
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-                close_fds=True,
-            )
+            proc = self._spawn(command, cwd=cwd, log_f=log_f)
             log_f.write(f"--- spawned pid={proc.pid} ---\n")
             log_f.flush()
-            # Do not close log_f: the child inherits the fd; closing would not
-            # stop writes from the child but avoids races with our header writes.
-            # We leave it open for the lifetime of the registry process — OS
-            # cleans up on exit. Track nothing further.
         except OSError as exc:
             self._mark(
                 process_id,
@@ -350,9 +434,39 @@ class ProcessManager:
                 stopped=True,
             )
             raise AprError(
-                ErrorCode.INTERNAL_ERROR,
+                ErrorCode.PROCESS_START_FAILED,
                 f"Failed to spawn process: {exc}",
             ) from exc
+
+        # Catch immediate exits (command not found, one-shot scripts, …) so the
+        # UI never shows a zombie / dead pid as "running".
+        exit_code = self._wait_startup(proc)
+        if exit_code is not None:
+            if exit_code == 0:
+                # Short-lived success (e.g. one-shot scripts): not an error,
+                # but free the live slot so another start can happen.
+                return self._mark(
+                    process_id,
+                    state="exited",
+                    pid=proc.pid,
+                    exit_code=0,
+                    started=True,
+                    stopped=True,
+                )
+            self._mark(
+                process_id,
+                state="failed",
+                pid=proc.pid,
+                exit_code=exit_code,
+                last_error=f"process exited immediately with code {exit_code}",
+                started=True,
+                stopped=True,
+            )
+            raise AprError(
+                ErrorCode.PROCESS_START_FAILED,
+                f"start_command exited immediately (code={exit_code}); "
+                f"see log {log_path}",
+            )
 
         return self._mark(
             process_id,
@@ -360,6 +474,18 @@ class ProcessManager:
             pid=proc.pid,
             started=True,
         )
+
+    def _wait_startup(self, proc: subprocess.Popen) -> int | None:
+        """Return exit code if the process dies within the startup probe window."""
+        deadline = time.monotonic() + _STARTUP_PROBE_SECONDS
+        while time.monotonic() < deadline:
+            code = proc.poll()
+            if code is not None:
+                return int(code)
+            time.sleep(0.05)
+        # One last check — still running is success for this probe.
+        code = proc.poll()
+        return int(code) if code is not None else None
 
     def stop(self, service_id: str) -> ManagedProcess:
         self._require_enabled()
@@ -441,7 +567,8 @@ class ProcessManager:
         if svc is None:
             raise AprError(ErrorCode.SERVICE_NOT_FOUND, f"Service not found: {service_id}")
 
-        # Prefer live process log, else latest historical row, else conventional path.
+        # Reconcile so a dead "running" row is not still advertised in the payload.
+        self.reconcile(service_id)
         proc = self.get_live(service_id) or self.get_latest(service_id)
         if proc and proc.log_path:
             path = Path(proc.log_path)

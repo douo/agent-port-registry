@@ -20,6 +20,7 @@ _STATUS: dict[ErrorCode, int] = {
     ErrorCode.PROCESS_MANAGEMENT_DISABLED: 403,
     ErrorCode.PROCESS_ALREADY_RUNNING: 409,
     ErrorCode.PROCESS_NOT_RUNNING: 409,
+    ErrorCode.PROCESS_START_FAILED: 500,
     ErrorCode.NO_START_COMMAND: 400,
     ErrorCode.INTERNAL_ERROR: 500,
 }

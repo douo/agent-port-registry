@@ -153,6 +153,35 @@ def test_no_start_command(client_pm) -> None:
     assert resp.json()["error"]["code"] == "NO_START_COMMAND"
 
 
+def test_immediate_failure_not_left_running(client_pm) -> None:
+    """command-not-found must mark failed and free the live slot — never 'running'."""
+    client, _ = client_pm
+    created = _ensure(
+        client,
+        key="missing-bin",
+        start_command="this-binary-definitely-does-not-exist-xyz serve",
+    )
+    sid = created["service_id"]
+
+    start = client.post(f"/v1/services/{sid}/start")
+    assert start.status_code == 500, start.text
+    assert start.json()["error"]["code"] == "PROCESS_START_FAILED"
+
+    status = client.get(f"/v1/services/{sid}/process").json()
+    proc = status["process"]
+    assert proc is not None
+    assert proc["state"] == "failed"
+    assert proc["alive"] is False
+    assert proc["exit_code"] not in (None, 0)
+
+    detail = client.get(f"/v1/services/{sid}").json()
+    assert detail["process"]["state"] == "failed"
+    # Live slot free → can start again (will fail again, but not ALREADY_RUNNING)
+    again = client.post(f"/v1/services/{sid}/start")
+    assert again.status_code == 500
+    assert again.json()["error"]["code"] == "PROCESS_START_FAILED"
+
+
 def test_port_placeholder_rendered(client_pm) -> None:
     client, cfg = client_pm
     out = Path(cfg.state_dir) / "port-out.txt"
@@ -165,9 +194,14 @@ def test_port_placeholder_rendered(client_pm) -> None:
 
     start = client.post(f"/v1/services/{sid}/start")
     assert start.status_code == 201, start.text
-    assert start.json()["command"] == (
+    body = start.json()
+    assert body["command"] == (
         f'python -c "open(r\'{out}\',\'w\').write(\'{port}\')"'
     )
+    # One-shot success: exited immediately with 0, not left "running".
+    assert body["state"] == "exited"
+    assert body["exit_code"] == 0
+    assert body["alive"] is False
 
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and not out.is_file():
@@ -175,9 +209,5 @@ def test_port_placeholder_rendered(client_pm) -> None:
     assert out.is_file(), "process did not write output file"
     assert out.read_text() == str(port)
 
-    # Short-lived process should exit; reconcile clears the live slot.
-    time.sleep(0.3)
     status = client.get(f"/v1/services/{sid}/process").json()
-    proc = status["process"]
-    if proc and proc["state"] in ("starting", "running") and proc.get("alive"):
-        client.post(f"/v1/services/{sid}/stop")
+    assert status["process"]["state"] == "exited"

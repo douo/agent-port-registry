@@ -171,10 +171,13 @@ export default function ServiceDetail() {
   }
   const anyLive = Object.values(portMap).some((p) => listeners.has(p))
   const process = s.process ?? null
+  // Backend reconcile should clear dead "running" rows; still require alive so a
+  // stale payload never shows 启动中 after command-not-found.
   const running =
     process != null &&
     (process.state === 'starting' || process.state === 'running') &&
-    process.alive
+    process.alive === true
+  const startFailed = process?.state === 'failed'
   const hasStartCommand = Boolean(s.start_command?.trim())
   const processBusy = startMut.isPending || stopMut.isPending
 
@@ -195,6 +198,12 @@ export default function ServiceDetail() {
           {running && (
             <span className="rounded bg-live/15 px-1.5 py-0.5 text-[11px] text-live">
               进程运行中 · pid {process?.pid}
+            </span>
+          )}
+          {startFailed && !running && (
+            <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[11px] text-danger">
+              启动失败
+              {process?.exit_code != null ? ` · exit ${process.exit_code}` : ''}
             </span>
           )}
           <div className="ml-auto flex flex-wrap items-center gap-2">

@@ -62,6 +62,9 @@ class Config:
     # "Run arbitrary start_command via the API / Web UI". Default OFF.
     process_management_enabled: bool = False
     process_stop_timeout_seconds: int = 10
+    # Run start_command under the user's login+interactive shell ($SHELL -lic)
+    # so PATH / profile match a normal terminal. Set false for thin daemon env.
+    process_user_shell_env: bool = True
     port_pool: PortPoolConfig = field(default_factory=PortPoolConfig)
 
     def ensure_dirs(self) -> None:
@@ -226,10 +229,16 @@ def load_config(
             cfg.process_stop_timeout_seconds = max(
                 1, int(pm_raw["stop_timeout_seconds"])
             )
+        if "user_shell_env" in pm_raw:
+            cfg.process_user_shell_env = bool(pm_raw["user_shell_env"])
     if env.get("APR_PROCESS_MANAGEMENT") in ("1", "true", "True", "yes"):
         cfg.process_management_enabled = True
     elif env.get("APR_PROCESS_MANAGEMENT") in ("0", "false", "False", "no"):
         cfg.process_management_enabled = False
+    if env.get("APR_PROCESS_USER_SHELL") in ("1", "true", "True", "yes"):
+        cfg.process_user_shell_env = True
+    elif env.get("APR_PROCESS_USER_SHELL") in ("0", "false", "False", "no"):
+        cfg.process_user_shell_env = False
 
     pool_raw = file_data.get("port_pool")
     if isinstance(pool_raw, dict):
