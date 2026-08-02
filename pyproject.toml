@@ -36,6 +36,7 @@ packages = ["src/apr"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/apr/store/schema.sql" = "apr/store/schema.sql"
+"src/apr/store/migrations" = "apr/store/migrations"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

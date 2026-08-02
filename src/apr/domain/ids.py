@@ -34,3 +34,15 @@ def new_service_id() -> str:
 
 def new_allocation_id() -> str:
     return _ulid_like("alloc")
+
+
+def new_node_id() -> str:
+    return _ulid_like("node")
+
+
+def new_forward_id() -> str:
+    return _ulid_like("fwd")
+
+
+def new_process_id() -> str:
+    return _ulid_like("proc")
