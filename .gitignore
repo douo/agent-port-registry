@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 测试与缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 运行时数据（APR 默认写入 XDG 目录，此处仅防御本地误放）
+*.db
+*.db-shm
+*.db-wal
+*.sock
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

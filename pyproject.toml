@@ -1,0 +1,49 @@
+[project]
+name = "apr"
+version = "0.1.0"
+description = "Agent Port Registry — local fixed port allocation and service index for coding agents"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "APR Contributors" }]
+dependencies = [
+    "typer>=0.15.0",
+    "starlette>=0.45.0",
+    "uvicorn>=0.34.0",
+    "pydantic>=2.10.0",
+    "httpx>=0.28.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+]
+
+[project.scripts]
+svcctl = "apr.cli.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/apr"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/apr" = "apr"
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/apr/store/schema.sql" = "apr/store/schema.sql"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+]
