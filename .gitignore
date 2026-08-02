@@ -32,5 +32,8 @@ htmlcov/
 web/node_modules/
 web/dist/
 
-# Local handoff notes (machine-specific; do not publish)
+# Local development progress / handoff (do not publish)
 docs/HANDOFF.md
+docs/progress.md
+docs/*HANDOFF*
+docs/*progress*

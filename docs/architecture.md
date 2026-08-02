@@ -101,7 +101,7 @@ agent-port-registry/
 ├── docs/
 │   ├── architecture.md      # 本文档
 │   ├── plan.md              # 实现计划
-│   └── progress.md          # 步骤进度落盘
+│   └── progress.md          # 步骤进度（本地，不入库）
 ├── skills/
 │   ├── common/SKILL.md
 │   ├── codex/
