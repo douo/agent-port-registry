@@ -22,6 +22,11 @@ _STATUS: dict[ErrorCode, int] = {
     ErrorCode.PROCESS_NOT_RUNNING: 409,
     ErrorCode.PROCESS_START_FAILED: 500,
     ErrorCode.NO_START_COMMAND: 400,
+    ErrorCode.NODE_NOT_FOUND: 404,
+    ErrorCode.NODE_SSH_FAILED: 502,
+    ErrorCode.FORWARD_NOT_FOUND: 404,
+    ErrorCode.FORWARD_START_FAILED: 500,
+    ErrorCode.LOCAL_PORT_UNAVAILABLE: 409,
     ErrorCode.INTERNAL_ERROR: 500,
 }
 

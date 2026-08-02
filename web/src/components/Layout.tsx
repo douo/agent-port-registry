@@ -9,6 +9,7 @@ const NAV = [
   { to: '/', label: '概览', icon: LayoutDashboard, end: true },
   { to: '/services', label: '服务', icon: Boxes, end: false },
   { to: '/ports', label: '端口', icon: Network, end: false },
+  { to: '/nodes', label: '节点', icon: Server, end: false },
 ]
 
 function NavItem({ item }: { item: (typeof NAV)[number] }) {
@@ -73,6 +74,7 @@ const TITLES: Record<string, string> = {
   '/': '概览',
   '/services': '服务',
   '/ports': '端口',
+  '/nodes': '节点',
 }
 
 export default function Layout() {
@@ -96,7 +98,11 @@ export default function Layout() {
 
   const title =
     TITLES[location.pathname] ??
-    (location.pathname.startsWith('/services/') ? '服务详情' : 'APR')
+    (location.pathname.startsWith('/services/')
+      ? '服务详情'
+      : location.pathname.startsWith('/nodes/')
+        ? '节点详情'
+        : 'APR')
 
   return (
     <div className="flex min-h-screen">
@@ -115,18 +121,6 @@ export default function Layout() {
           {NAV.map((item) => (
             <NavItem key={item.to} item={item} />
           ))}
-          {/* Placeholder for v2 phase 5; shown disabled so the shape of the
-              product is visible before the feature lands. */}
-          <div
-            title="主从节点：v2 阶段 5"
-            className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2 text-sm text-faint"
-          >
-            <Server size={16} strokeWidth={1.75} />
-            节点
-            <span className="ml-auto rounded bg-raised px-1.5 py-0.5 text-[10px] text-faint">
-              即将
-            </span>
-          </div>
         </nav>
 
         <div className="mt-auto space-y-1 px-2 pt-4 text-[11px] text-faint">

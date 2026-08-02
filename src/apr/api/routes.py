@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+
+_T = TypeVar("_T")
 
 from apr import __version__
 from apr.domain.errors import AprError, ErrorCode
@@ -24,6 +28,8 @@ from apr.domain.models import (
 )
 from apr.listener.probe import probe_listeners
 from apr.service.ensure import EnsureService, check_allocation_ports
+from apr.service.forwards import ForwardManager
+from apr.service.nodes import NodeManager
 from apr.service.process import ProcessManager
 
 
@@ -62,6 +68,36 @@ def _process_mgr(request: Request) -> ProcessManager:
         mgr = ProcessManager(_repo(request), cfg)
         _state(request)["process_manager"] = mgr
     return mgr
+
+
+def _node_mgr(request: Request) -> NodeManager:
+    mgr = _state(request).get("node_manager")
+    if mgr is None:
+        mgr = NodeManager(_repo(request))
+        _state(request)["node_manager"] = mgr
+    return mgr
+
+
+def _forward_mgr(request: Request) -> ForwardManager:
+    mgr = _state(request).get("forward_manager")
+    if mgr is None:
+        cfg = _config(request)
+        if cfg is None:
+            from apr.config import default_config
+
+            cfg = default_config()
+        mgr = ForwardManager(_repo(request), cfg, _node_mgr(request))
+        _state(request)["forward_manager"] = mgr
+    return mgr
+
+
+async def _to_thread(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """Run blocking work off the event loop.
+
+    Critical for SSH control plane: a sync ``ssh … svcctl list`` against the
+    *same* APR process would otherwise deadlock the single-threaded loop.
+    """
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 async def ensure_allocation(request: Request) -> JSONResponse:
@@ -537,6 +573,224 @@ async def get_service_process(request: Request) -> JSONResponse:
     )
 
 
+# ── Nodes (SSH control plane) ─────────────────────────────────
+
+
+async def list_nodes(request: Request) -> JSONResponse:
+    mgr = _node_mgr(request)
+    fm = _forward_mgr(request)
+
+    def _work() -> list[dict[str, Any]]:
+        fm.reconcile()
+        return mgr.list_with_snapshots()
+
+    nodes = await _to_thread(_work)
+    return JSONResponse({"nodes": nodes})
+
+
+async def create_node(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise AprError(ErrorCode.INVALID_REQUEST, f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise AprError(ErrorCode.INVALID_REQUEST, "Body must be an object")
+    mgr = _node_mgr(request)
+    node = await _to_thread(
+        mgr.create,
+        name=str(body.get("name") or ""),
+        ssh_host=str(body.get("ssh_host") or ""),
+        ssh_user=body.get("ssh_user"),
+        ssh_port=body.get("ssh_port"),
+        identity_file=body.get("identity_file"),
+        apr_command=str(body.get("apr_command") or "svcctl"),
+        enabled=bool(body.get("enabled", True)),
+        refresh_interval_seconds=int(body.get("refresh_interval_seconds") or 30),
+        kind=str(body.get("kind") or "remote"),
+    )
+    return JSONResponse(node.to_dict(snapshot=None), status_code=201)
+
+
+async def get_node(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    payload = await _to_thread(_node_mgr(request).detail_with_snapshot, node_id)
+    return JSONResponse(payload)
+
+
+async def patch_node(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise AprError(ErrorCode.INVALID_REQUEST, f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise AprError(ErrorCode.INVALID_REQUEST, "Body must be an object")
+    # Only pass keys that are present so optional clears work with explicit null.
+    fields = {
+        k: body[k]
+        for k in (
+            "name",
+            "ssh_host",
+            "ssh_user",
+            "ssh_port",
+            "identity_file",
+            "apr_command",
+            "enabled",
+            "refresh_interval_seconds",
+            "kind",
+        )
+        if k in body
+    }
+    mgr = _node_mgr(request)
+
+    def _work() -> dict[str, Any]:
+        node = mgr.update(node_id, **fields)
+        return node.to_dict(snapshot=mgr.get_snapshot(node_id))
+
+    return JSONResponse(await _to_thread(_work))
+
+
+async def delete_node(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    fm = _forward_mgr(request)
+    mgr = _node_mgr(request)
+
+    def _work() -> dict[str, Any]:
+        for fwd in fm.list_live(node_id=node_id):
+            try:
+                fm.stop(fwd.id)
+            except AprError:
+                pass
+        return mgr.delete(node_id)
+
+    return JSONResponse(await _to_thread(_work))
+
+
+async def refresh_node(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    result = await _to_thread(_node_mgr(request).refresh, node_id)
+    return JSONResponse(result)
+
+
+async def list_node_services(request: Request) -> JSONResponse:
+    """Return snapshot services if present; optional ?live=1 forces SSH list."""
+    node_id = request.path_params["node_id"]
+    live = request.query_params.get("live") in ("1", "true", "yes")
+    mgr = _node_mgr(request)
+
+    def _work() -> dict[str, Any]:
+        mgr.require(node_id)
+        if live:
+            data = mgr.list_services_live(node_id)
+            return data if isinstance(data, dict) else {"services": data}
+        snap = mgr.get_snapshot(node_id)
+        if snap is None or snap.get("status") != "ok" or not snap.get("payload"):
+            result = mgr.refresh(node_id)
+            snap = result.get("snapshot")
+        payload = (snap or {}).get("payload") or {}
+        if isinstance(payload, dict) and "services" in payload:
+            return {
+                "services": payload.get("services") or [],
+                "snapshot": {
+                    "fetched_at": (snap or {}).get("fetched_at"),
+                    "status": (snap or {}).get("status"),
+                    "error": (snap or {}).get("error"),
+                    "duration_ms": (snap or {}).get("duration_ms"),
+                },
+            }
+        return {"services": [], "snapshot": snap}
+
+    return JSONResponse(await _to_thread(_work))
+
+
+async def get_node_service(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    service_id = request.path_params["service_id"]
+    data = await _to_thread(_node_mgr(request).get_service_live, node_id, service_id)
+    return JSONResponse(data)
+
+
+async def start_node_service(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    service_id = request.path_params["service_id"]
+    data = await _to_thread(_node_mgr(request).start_service, node_id, service_id)
+    return JSONResponse(data, status_code=201)
+
+
+async def stop_node_service(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    service_id = request.path_params["service_id"]
+    data = await _to_thread(_node_mgr(request).stop_service, node_id, service_id)
+    return JSONResponse(data)
+
+
+async def node_service_logs(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    service_id = request.path_params["service_id"]
+    try:
+        tail = int(request.query_params.get("tail", "200"))
+    except ValueError as exc:
+        raise AprError(ErrorCode.INVALID_REQUEST, "tail must be an integer") from exc
+    data = await _to_thread(
+        _node_mgr(request).service_logs, node_id, service_id, tail=tail
+    )
+    return JSONResponse(data)
+
+
+# ── Port forwards (autossh) ───────────────────────────────────
+
+
+async def list_forwards(request: Request) -> JSONResponse:
+    fm = _forward_mgr(request)
+    node_id = request.query_params.get("node_id")
+
+    def _work() -> list[dict[str, Any]]:
+        fm.reconcile()
+        return [f.to_dict() for f in fm.list_forwards(node_id=node_id)]
+
+    return JSONResponse({"forwards": await _to_thread(_work)})
+
+
+async def create_forward(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise AprError(ErrorCode.INVALID_REQUEST, f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise AprError(ErrorCode.INVALID_REQUEST, "Body must be an object")
+    if body.get("remote_port") is None:
+        raise AprError(ErrorCode.INVALID_REQUEST, "remote_port is required")
+    fm = _forward_mgr(request)
+    fwd = await _to_thread(
+        fm.start,
+        node_id,
+        remote_port=int(body["remote_port"]),
+        local_port=int(body["local_port"]) if body.get("local_port") is not None else None,
+        remote_host=str(body.get("remote_host") or "127.0.0.1"),
+        label=body.get("label"),
+        auto_reconnect=bool(body.get("auto_reconnect", True)),
+    )
+    return JSONResponse(fwd.to_dict(), status_code=201)
+
+
+async def stop_forward(request: Request) -> JSONResponse:
+    forward_id = request.path_params["forward_id"]
+    fwd = await _to_thread(_forward_mgr(request).stop, forward_id)
+    return JSONResponse(fwd.to_dict())
+
+
+async def get_forward(request: Request) -> JSONResponse:
+    forward_id = request.path_params["forward_id"]
+    fm = _forward_mgr(request)
+
+    def _work() -> dict[str, Any]:
+        fm.reconcile(forward_id)
+        return fm.require(forward_id).to_dict()
+
+    return JSONResponse(await _to_thread(_work))
+
+
 def api_routes() -> list[Route]:
     return [
         Route("/v1/overview", get_overview, methods=["GET"]),
@@ -568,6 +822,39 @@ def api_routes() -> list[Route]:
             get_service_process,
             methods=["GET"],
         ),
+        # Nodes
+        Route("/v1/nodes", list_nodes, methods=["GET"]),
+        Route("/v1/nodes", create_node, methods=["POST"]),
+        Route("/v1/nodes/{node_id}", get_node, methods=["GET"]),
+        Route("/v1/nodes/{node_id}", patch_node, methods=["PATCH"]),
+        Route("/v1/nodes/{node_id}", delete_node, methods=["DELETE"]),
+        Route("/v1/nodes/{node_id}/refresh", refresh_node, methods=["POST"]),
+        Route("/v1/nodes/{node_id}/services", list_node_services, methods=["GET"]),
+        Route(
+            "/v1/nodes/{node_id}/services/{service_id}",
+            get_node_service,
+            methods=["GET"],
+        ),
+        Route(
+            "/v1/nodes/{node_id}/services/{service_id}/start",
+            start_node_service,
+            methods=["POST"],
+        ),
+        Route(
+            "/v1/nodes/{node_id}/services/{service_id}/stop",
+            stop_node_service,
+            methods=["POST"],
+        ),
+        Route(
+            "/v1/nodes/{node_id}/services/{service_id}/logs",
+            node_service_logs,
+            methods=["GET"],
+        ),
+        Route("/v1/nodes/{node_id}/forwards", create_forward, methods=["POST"]),
+        # Forwards
+        Route("/v1/forwards", list_forwards, methods=["GET"]),
+        Route("/v1/forwards/{forward_id}", get_forward, methods=["GET"]),
+        Route("/v1/forwards/{forward_id}", stop_forward, methods=["DELETE"]),
         Route("/v1/ports/{port}", get_port, methods=["GET"]),
         Route("/v1/allocations/{allocation_id}", get_allocation, methods=["GET"]),
         Route(

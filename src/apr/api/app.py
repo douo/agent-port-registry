@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +20,8 @@ from apr.api.routes import api_routes
 from apr.domain.errors import AprError
 from apr.webui import webui_routes
 
+_log = logging.getLogger("apr.nodes")
+
 
 async def healthz(_request: Request) -> JSONResponse:
     return JSONResponse(
@@ -27,6 +31,37 @@ async def healthz(_request: Request) -> JSONResponse:
             "version": __version__,
         }
     )
+
+
+async def _node_refresh_loop(apr_state: dict[str, Any]) -> None:
+    """Periodically refresh enabled SSH nodes and reconcile autossh forwards."""
+    # Stagger first tick so serve startup stays snappy.
+    await asyncio.sleep(5)
+    while True:
+        try:
+            repo = apr_state.get("repo")
+            cfg = apr_state.get("config")
+            if repo is not None:
+                from apr.service.forwards import ForwardManager
+                from apr.service.nodes import NodeManager
+
+                nm = apr_state.get("node_manager")
+                if nm is None:
+                    nm = NodeManager(repo)
+                    apr_state["node_manager"] = nm
+                fm = apr_state.get("forward_manager")
+                if fm is None and cfg is not None:
+                    fm = ForwardManager(repo, cfg, nm)
+                    apr_state["forward_manager"] = fm
+                # Refresh runs in a worker thread — SSH is blocking.
+                await asyncio.to_thread(nm.refresh_enabled)
+                if fm is not None:
+                    await asyncio.to_thread(fm.reconcile)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _log.exception("background node refresh failed")
+        await asyncio.sleep(30)
 
 
 def create_app(*, state: dict[str, Any] | None = None) -> Starlette:
@@ -55,13 +90,23 @@ def create_app(*, state: dict[str, Any] | None = None) -> Starlette:
                     os.chmod(sock, 0o600)
                 except OSError:
                     pass
-        yield
-        db = apr_state.get("db")
-        if db is not None:
+        refresh_task = asyncio.create_task(
+            _node_refresh_loop(apr_state), name="apr-node-refresh"
+        )
+        try:
+            yield
+        finally:
+            refresh_task.cancel()
             try:
-                db.close()
-            except Exception:
+                await refresh_task
+            except asyncio.CancelledError:
                 pass
+            db = apr_state.get("db")
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     routes = [
         Route("/healthz", healthz, methods=["GET"]),

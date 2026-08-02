@@ -282,7 +282,12 @@ COMMIT
   **默认关闭**（`process_management.enabled` / `APR_PROCESS_MANAGEMENT=1`）；
   日志 `state_dir/logs/{service_id}.log`；停止 SIGTERM→超时 SIGKILL
 
-暂缓：主从节点（SSH）与一键端口转发。
+已落地：主从节点（SSH 管控面）与一键端口转发（autossh）。
+
+- 主节点持有 `nodes` / `node_snapshots`；经 `ssh -o BatchMode=yes` 远程执行
+  `{apr_command} list|inspect-service|process …`，从节点 APR 仍只听 Unix socket
+- 端口转发：`autossh -M 0 -N -o ExitOnForwardFailure=yes -L local:127.0.0.1:remote`
+  记入 `port_forwards`；UI 一键开关
 
 ---
 

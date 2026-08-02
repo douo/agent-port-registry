@@ -10,6 +10,7 @@ import typer
 
 from apr import __version__
 from apr.cli import ensure as ensure_mod
+from apr.cli import process_cmd as process_mod
 from apr.cli import query as query_mod
 from apr.cli import release as release_mod
 from apr.cli import serve as serve_mod
@@ -28,6 +29,7 @@ serve_mod.register(app)
 ensure_mod.register(app)
 query_mod.register(app)
 release_mod.register(app)
+process_mod.register(app)
 user_service_mod.register(app)
 
 
