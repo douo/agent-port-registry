@@ -273,6 +273,17 @@ COMMIT
 - `check` 完整 PID/cmdline
 - search、backup、Web UI 可后置
 
+### 6.1 v2 增量（见 `docs/plan-v2-webui.md`）
+
+已落地：
+
+- Web UI（loopback TCP + SPA；写操作复用 `/v1/*`）
+- 服务进程管理：`ProcessManager` 渲染 `{{ports.x}}` 后 spawn `start_command`；
+  **默认关闭**（`process_management.enabled` / `APR_PROCESS_MANAGEMENT=1`）；
+  日志 `state_dir/logs/{service_id}.log`；停止 SIGTERM→超时 SIGKILL
+
+暂缓：主从节点（SSH）与一键端口转发。
+
 ---
 
 ## 7. 决策记录
@@ -286,3 +297,5 @@ COMMIT
 | D5 | stdlib sqlite3 | 零原生扩展风险，WAL 足够 |
 | D6 | First Fit 仅 | PRD MVP 明确要求 |
 | D7 | ensure 自动拉起 daemon | 提升 Agent 首次使用成功率 |
+| D8 | 进程管理默认关闭 | 避免 Web 成为任意命令执行面；需显式 opt-in |
+| D9 | 主从仅走 SSH、从节点零暴露 | 不新增鉴权面；复用既有 SSH 信任 |

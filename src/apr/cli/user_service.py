@@ -45,6 +45,13 @@ web:
   # host: {DEFAULT_HTTP_HOST}
   # port: {DEFAULT_HTTP_PORT}
 
+# Process management: run services.start_command via API / Web UI.
+# DANGEROUS — this is "execute arbitrary command". Default OFF; enable only on
+# trusted loopback machines. Env override: APR_PROCESS_MANAGEMENT=1
+process_management:
+  enabled: false
+  stop_timeout_seconds: 10
+
 port_pool:
   start: {DEFAULT_PORT_POOL_START}
   end: {DEFAULT_PORT_POOL_END}

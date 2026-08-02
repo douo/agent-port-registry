@@ -1,9 +1,19 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pencil, Plus, Terminal, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  Pencil,
+  Plus,
+  Square,
+  Terminal,
+  Trash2,
+  Play,
+  ScrollText,
+} from 'lucide-react'
 import {
   api,
+  errorLabel,
   invalidateServiceViews,
   queryKeys,
   type Allocation,
@@ -16,6 +26,7 @@ import {
   Button,
   ConfirmDialog,
   ErrorNote,
+  FormError,
   Loading,
   Panel,
   PanelHeader,
@@ -57,6 +68,34 @@ export default function ServiceDetail() {
   const listenersQuery = useQuery({
     queryKey: queryKeys.listeners,
     queryFn: () => api.listeners(),
+  })
+  const overview = useQuery({ queryKey: queryKeys.overview, queryFn: api.overview })
+  const pmEnabled = overview.data?.features?.process_management === true
+  const logsQuery = useQuery({
+    queryKey: queryKeys.serviceLogs(id),
+    queryFn: () => api.serviceLogs(id, 200),
+    enabled: Boolean(id) && pmEnabled,
+    refetchInterval: 3000,
+  })
+
+  const startMut = useMutation({
+    mutationFn: () => api.startService(id),
+    onSuccess: async () => {
+      setActionError(null)
+      await invalidateServiceViews(qc, id)
+      await qc.invalidateQueries({ queryKey: queryKeys.serviceLogs(id) })
+    },
+    onError: (err) => setActionError(err),
+  })
+
+  const stopMut = useMutation({
+    mutationFn: () => api.stopService(id),
+    onSuccess: async () => {
+      setActionError(null)
+      await invalidateServiceViews(qc, id)
+      await qc.invalidateQueries({ queryKey: queryKeys.serviceLogs(id) })
+    },
+    onError: (err) => setActionError(err),
   })
 
   const releaseMut = useMutation({
@@ -131,6 +170,13 @@ export default function ServiceDetail() {
     for (const p of alloc.ports) portMap[p.port_name ?? p.resource_name] = p.port
   }
   const anyLive = Object.values(portMap).some((p) => listeners.has(p))
+  const process = s.process ?? null
+  const running =
+    process != null &&
+    (process.state === 'starting' || process.state === 'running') &&
+    process.alive
+  const hasStartCommand = Boolean(s.start_command?.trim())
+  const processBusy = startMut.isPending || stopMut.isPending
 
   return (
     <div className="space-y-5">
@@ -143,10 +189,42 @@ export default function ServiceDetail() {
           返回服务列表
         </Link>
         <div className="flex flex-wrap items-center gap-3">
-          <StatusDot live={anyLive} />
+          <StatusDot live={anyLive || running} />
           <h2 className="text-xl">{s.name}</h2>
           <span className="chip">{s.id}</span>
+          {running && (
+            <span className="rounded bg-live/15 px-1.5 py-0.5 text-[11px] text-live">
+              进程运行中 · pid {process?.pid}
+            </span>
+          )}
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {pmEnabled && hasStartCommand && (
+              running ? (
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    setActionError(null)
+                    stopMut.mutate()
+                  }}
+                  disabled={processBusy}
+                >
+                  <Square size={14} />
+                  {stopMut.isPending ? '停止中…' : '停止'}
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setActionError(null)
+                    startMut.mutate()
+                  }}
+                  disabled={processBusy}
+                >
+                  <Play size={14} />
+                  {startMut.isPending ? '启动中…' : '启动'}
+                </Button>
+              )
+            )}
             <Button variant="secondary" onClick={() => setEnsureOpen(true)}>
               <Plus size={14} />
               申请端口
@@ -162,6 +240,13 @@ export default function ServiceDetail() {
           </div>
         </div>
         {s.description && <p className="mt-2 text-sm text-muted">{s.description}</p>}
+        {Boolean(startMut.isError || stopMut.isError || actionError) &&
+          releaseTarget == null &&
+          !deleteOpen && (
+            <div className="mt-3">
+              <FormError error={actionError ?? startMut.error ?? stopMut.error} />
+            </div>
+          )}
       </div>
 
       <Panel>
@@ -226,6 +311,92 @@ export default function ServiceDetail() {
           </table>
         )}
       </Panel>
+
+      {(pmEnabled || hasStartCommand) && (
+        <Panel>
+          <PanelHeader
+            title="进程"
+            hint={
+              !pmEnabled
+                ? '进程管理未开启'
+                : running
+                  ? `pid ${process?.pid}`
+                  : process
+                    ? process.state
+                    : '未启动'
+            }
+            action={
+              pmEnabled ? (
+                <span className="flex items-center gap-1 text-[11px] text-faint">
+                  <ScrollText size={12} />
+                  日志自动刷新
+                </span>
+              ) : undefined
+            }
+          />
+          {!pmEnabled ? (
+            <div className="space-y-2 px-4 py-4 text-sm text-muted">
+              <p>
+                启动 / 停止需要显式开启进程管理。在{' '}
+                <code className="font-mono text-xs text-fg">~/.config/apr/config.yaml</code>{' '}
+                中设置：
+              </p>
+              <pre className="rounded-lg bg-raised px-3 py-2 font-mono text-xs text-fg">
+                {`process_management:\n  enabled: true`}
+              </pre>
+              <p className="text-xs text-faint">
+                或环境变量 <code className="font-mono">APR_PROCESS_MANAGEMENT=1</code>
+                ，然后重启 registry。此能力可执行任意命令，默认关闭。
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3 px-4 py-3">
+              {process ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                  <span className="chip">{process.id}</span>
+                  <span
+                    className={[
+                      'rounded px-1.5 py-0.5',
+                      running ? 'bg-live/15 text-live' : 'bg-raised text-faint',
+                    ].join(' ')}
+                  >
+                    {process.state}
+                    {process.exit_code != null ? ` · exit ${process.exit_code}` : ''}
+                  </span>
+                  {process.started_at && (
+                    <span>启动于 {relativeTime(process.started_at)}</span>
+                  )}
+                  {process.last_error && (
+                    <span className="text-danger">{process.last_error}</span>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-faint">尚无托管进程记录</div>
+              )}
+              {process?.command && (
+                <div className="flex items-start gap-2 rounded-lg bg-raised px-3 py-2">
+                  <Terminal size={13} className="mt-0.5 shrink-0 text-faint" />
+                  <code className="font-mono text-xs text-fg">{process.command}</code>
+                </div>
+              )}
+              <div className="overflow-hidden rounded-lg border border-line-soft bg-base">
+                <div className="border-b border-line-soft px-3 py-1.5 text-[11px] text-faint">
+                  {logsQuery.data?.log_path ?? `state/logs/${s.id}.log`}
+                </div>
+                <pre className="max-h-64 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-muted">
+                  {logsQuery.isLoading
+                    ? '加载日志…'
+                    : logsQuery.isError
+                      ? errorLabel(logsQuery.error)
+                      : (logsQuery.data?.lines.length ?? 0) === 0
+                        ? '（日志为空）'
+                        : logsQuery.data!.lines.join('\n')}
+                </pre>
+              </div>
+            </div>
+          )}
+        </Panel>
+      )}
 
       <Panel>
         <PanelHeader title="元数据" />

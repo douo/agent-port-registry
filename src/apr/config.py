@@ -59,6 +59,9 @@ class Config:
     use_unix_socket: bool = True
     auto_start: bool = True
     web_enabled: bool = False
+    # "Run arbitrary start_command via the API / Web UI". Default OFF.
+    process_management_enabled: bool = False
+    process_stop_timeout_seconds: int = 10
     port_pool: PortPoolConfig = field(default_factory=PortPoolConfig)
 
     def ensure_dirs(self) -> None:
@@ -127,7 +130,8 @@ def load_config(
 
     Environment variables (highest precedence after explicit args):
       APR_DATA_DIR, APR_SOCKET, APR_DB, APR_HTTP_HOST, APR_HTTP_PORT,
-      APR_USE_TCP=1, APR_AUTO_START=0, APR_CONFIG, APR_WEB=1
+      APR_USE_TCP=1, APR_AUTO_START=0, APR_CONFIG, APR_WEB=1,
+      APR_PROCESS_MANAGEMENT=1
     """
     env = env if env is not None else os.environ
     cfg = default_config()
@@ -213,6 +217,19 @@ def load_config(
         cfg.web_enabled = True
     elif env.get("APR_WEB") in ("0", "false", "False", "no"):
         cfg.web_enabled = False
+
+    pm_raw = file_data.get("process_management")
+    if isinstance(pm_raw, dict):
+        if "enabled" in pm_raw:
+            cfg.process_management_enabled = bool(pm_raw["enabled"])
+        if pm_raw.get("stop_timeout_seconds") is not None:
+            cfg.process_stop_timeout_seconds = max(
+                1, int(pm_raw["stop_timeout_seconds"])
+            )
+    if env.get("APR_PROCESS_MANAGEMENT") in ("1", "true", "True", "yes"):
+        cfg.process_management_enabled = True
+    elif env.get("APR_PROCESS_MANAGEMENT") in ("0", "false", "False", "no"):
+        cfg.process_management_enabled = False
 
     pool_raw = file_data.get("port_pool")
     if isinstance(pool_raw, dict):

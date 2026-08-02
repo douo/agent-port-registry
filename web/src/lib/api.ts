@@ -25,6 +25,34 @@ export interface Overview {
   }
   nodes: { total: number; snapshots: number }
   forwards: { active: number }
+  features?: { process_management?: boolean }
+}
+
+export type ProcessState = 'starting' | 'running' | 'stopped' | 'failed' | 'exited'
+
+export interface ManagedProcess {
+  id: string
+  service_id: string
+  allocation_id: string | null
+  command: string
+  working_directory: string | null
+  pid: number | null
+  state: ProcessState
+  exit_code: number | null
+  log_path: string | null
+  last_error: string | null
+  created_at: string
+  started_at: string | null
+  stopped_at: string | null
+  alive: boolean
+}
+
+export interface ServiceLogs {
+  service_id: string
+  log_path: string
+  tail: number
+  lines: string[]
+  process: ManagedProcess | null
 }
 
 export type AllocationState = 'reserved' | 'released'
@@ -65,6 +93,7 @@ export interface Service {
   created_at: string
   updated_at: string
   allocations: Allocation[]
+  process?: ManagedProcess | null
 }
 
 export interface Pool {
@@ -187,6 +216,10 @@ export const ERROR_MESSAGES: Record<string, string> = {
   ALLOCATION_RELEASED: '分配已被释放',
   SERVICE_NOT_FOUND: '服务不存在',
   ALLOCATION_NOT_FOUND: '分配不存在',
+  PROCESS_MANAGEMENT_DISABLED: '进程管理未开启（需 process_management.enabled）',
+  PROCESS_ALREADY_RUNNING: '服务进程已在运行',
+  PROCESS_NOT_RUNNING: '服务进程未在运行',
+  NO_START_COMMAND: '服务未配置启动命令',
   INTERNAL_ERROR: '服务端内部错误',
   NETWORK_ERROR: '无法连接 Registry',
   INVALID_RESPONSE: '响应不是合法 JSON',
@@ -314,6 +347,20 @@ export const api = {
       },
     )
   },
+
+  startService: (id: string) =>
+    request<ManagedProcess>(`/v1/services/${id}/start`, { method: 'POST' }),
+
+  stopService: (id: string) =>
+    request<ManagedProcess>(`/v1/services/${id}/stop`, { method: 'POST' }),
+
+  serviceLogs: (id: string, tail = 200) =>
+    request<ServiceLogs>(`/v1/services/${id}/logs?tail=${tail}`),
+
+  serviceProcess: (id: string) =>
+    request<{ service_id: string; process: ManagedProcess | null }>(
+      `/v1/services/${id}/process`,
+    ),
 }
 
 /* ------------------------------------------------------------- query utils */
@@ -325,6 +372,8 @@ export const queryKeys = {
   services: ['services'] as const,
   service: (id: string) => ['service', id] as const,
   port: (port: number) => ['port', port] as const,
+  serviceLogs: (id: string) => ['service-logs', id] as const,
+  serviceProcess: (id: string) => ['service-process', id] as const,
 }
 
 /** Invalidate every list/detail view that shows services or ports. */
@@ -340,6 +389,8 @@ export function invalidateServiceViews(
   ]
   if (serviceId) {
     tasks.push(client.invalidateQueries({ queryKey: queryKeys.service(serviceId) }))
+    tasks.push(client.invalidateQueries({ queryKey: queryKeys.serviceLogs(serviceId) }))
+    tasks.push(client.invalidateQueries({ queryKey: queryKeys.serviceProcess(serviceId) }))
   }
   return Promise.all(tasks)
 }

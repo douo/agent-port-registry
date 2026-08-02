@@ -24,6 +24,7 @@ from apr.domain.models import (
 )
 from apr.listener.probe import probe_listeners
 from apr.service.ensure import EnsureService, check_allocation_ports
+from apr.service.process import ProcessManager
 
 
 def _state(request: Request) -> dict[str, Any]:
@@ -37,13 +38,30 @@ def _repo(request: Request):
     return repo
 
 
+def _config(request: Request):
+    return _state(request).get("config")
+
+
 def _ensure_svc(request: Request) -> EnsureService:
     svc = _state(request).get("ensure")
     if svc is None:
-        cfg = _state(request).get("config")
+        cfg = _config(request)
         svc = EnsureService(_repo(request), config=cfg)
         _state(request)["ensure"] = svc
     return svc
+
+
+def _process_mgr(request: Request) -> ProcessManager:
+    mgr = _state(request).get("process_manager")
+    if mgr is None:
+        cfg = _config(request)
+        if cfg is None:
+            from apr.config import default_config
+
+            cfg = default_config()
+        mgr = ProcessManager(_repo(request), cfg)
+        _state(request)["process_manager"] = mgr
+    return mgr
 
 
 async def ensure_allocation(request: Request) -> JSONResponse:
@@ -60,8 +78,15 @@ async def ensure_allocation(request: Request) -> JSONResponse:
     return JSONResponse(result.model_dump(mode="json"), status_code=200)
 
 
-def _service_detail(repo, svc) -> dict[str, Any]:
+def _service_detail(repo, svc, *, process_manager: ProcessManager | None = None) -> dict[str, Any]:
     allocs = repo.list_allocations_for_service(svc.id)
+    process = None
+    if process_manager is not None:
+        # Reconcile orphans so the UI never shows a zombie "running" badge.
+        live = process_manager.reconcile(svc.id)
+        latest = live or process_manager.get_latest(svc.id)
+        if latest is not None:
+            process = latest.to_dict()
     return {
         **svc.model_dump(mode="json"),
         "allocations": [
@@ -88,6 +113,7 @@ def _service_detail(repo, svc) -> dict[str, Any]:
             }
             for a in allocs
         ],
+        "process": process,
     }
 
 
@@ -123,7 +149,10 @@ async def create_service(request: Request) -> JSONResponse:
         working_directory=req.service.working_directory,
         start_command=req.service.start_command,
     )
-    return JSONResponse(_service_detail(repo, svc), status_code=201)
+    return JSONResponse(
+        _service_detail(repo, svc, process_manager=_process_mgr(request)),
+        status_code=201,
+    )
 
 
 async def list_services(request: Request) -> JSONResponse:
@@ -136,7 +165,8 @@ async def list_services(request: Request) -> JSONResponse:
         agent_type=agent_type,
         agent_project_id=agent_project_id,
     )
-    items = [_service_detail(repo, s) for s in services]
+    mgr = _process_mgr(request)
+    items = [_service_detail(repo, s, process_manager=mgr) for s in services]
     return JSONResponse({"services": items})
 
 
@@ -146,7 +176,7 @@ async def get_service(request: Request) -> JSONResponse:
     svc = repo.get_service(service_id)
     if svc is None:
         raise AprError(ErrorCode.SERVICE_NOT_FOUND, f"Service not found: {service_id}")
-    return JSONResponse(_service_detail(repo, svc))
+    return JSONResponse(_service_detail(repo, svc, process_manager=_process_mgr(request)))
 
 
 async def delete_service(request: Request) -> JSONResponse:
@@ -459,6 +489,50 @@ async def get_overview(request: Request) -> JSONResponse:
                     )["c"]
                 ),
             },
+            "features": {
+                "process_management": bool(
+                    getattr(_config(request), "process_management_enabled", False)
+                ),
+            },
+        }
+    )
+
+
+async def start_service_process(request: Request) -> JSONResponse:
+    """Spawn services.start_command (gated by process_management.enabled)."""
+    service_id = request.path_params["service_id"]
+    proc = _process_mgr(request).start(service_id)
+    return JSONResponse(proc.to_dict(), status_code=201)
+
+
+async def stop_service_process(request: Request) -> JSONResponse:
+    service_id = request.path_params["service_id"]
+    proc = _process_mgr(request).stop(service_id)
+    return JSONResponse(proc.to_dict())
+
+
+async def get_service_logs(request: Request) -> JSONResponse:
+    service_id = request.path_params["service_id"]
+    try:
+        tail = int(request.query_params.get("tail", "200"))
+    except ValueError as exc:
+        raise AprError(ErrorCode.INVALID_REQUEST, "tail must be an integer") from exc
+    payload = _process_mgr(request).logs(service_id, tail=tail)
+    return JSONResponse(payload)
+
+
+async def get_service_process(request: Request) -> JSONResponse:
+    """Latest (or live) managed process for a service, after reconciliation."""
+    service_id = request.path_params["service_id"]
+    mgr = _process_mgr(request)
+    if mgr.repo.get_service(service_id) is None:
+        raise AprError(ErrorCode.SERVICE_NOT_FOUND, f"Service not found: {service_id}")
+    live = mgr.reconcile(service_id)
+    latest = live or mgr.get_latest(service_id)
+    return JSONResponse(
+        {
+            "service_id": service_id,
+            "process": latest.to_dict() if latest else None,
         }
     )
 
@@ -474,6 +548,26 @@ def api_routes() -> list[Route]:
         Route("/v1/services/{service_id}", get_service, methods=["GET"]),
         Route("/v1/services/{service_id}", patch_service, methods=["PATCH"]),
         Route("/v1/services/{service_id}", delete_service, methods=["DELETE"]),
+        Route(
+            "/v1/services/{service_id}/start",
+            start_service_process,
+            methods=["POST"],
+        ),
+        Route(
+            "/v1/services/{service_id}/stop",
+            stop_service_process,
+            methods=["POST"],
+        ),
+        Route(
+            "/v1/services/{service_id}/logs",
+            get_service_logs,
+            methods=["GET"],
+        ),
+        Route(
+            "/v1/services/{service_id}/process",
+            get_service_process,
+            methods=["GET"],
+        ),
         Route("/v1/ports/{port}", get_port, methods=["GET"]),
         Route("/v1/allocations/{allocation_id}", get_allocation, methods=["GET"]),
         Route(
