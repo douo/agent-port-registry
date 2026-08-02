@@ -37,6 +37,14 @@ auto_start: true
 # http_host: {DEFAULT_HTTP_HOST}
 # http_port: {DEFAULT_HTTP_PORT}
 
+# Web UI. When enabled the registry additionally binds
+# http://{DEFAULT_HTTP_HOST}:{DEFAULT_HTTP_PORT} for the browser; the CLI keeps
+# using the Unix socket. Loopback only — never bind this to a public interface.
+web:
+  enabled: false
+  # host: {DEFAULT_HTTP_HOST}
+  # port: {DEFAULT_HTTP_PORT}
+
 port_pool:
   start: {DEFAULT_PORT_POOL_START}
   end: {DEFAULT_PORT_POOL_END}

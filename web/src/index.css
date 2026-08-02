@@ -1,0 +1,112 @@
+@import 'tailwindcss';
+
+/* ---------------------------------------------------------------------------
+   Design tokens. Dark-only by design: APR is a loopback dev tool that lives in
+   a terminal-adjacent context, and a single well-tuned dark palette beats a
+   mediocre pair of themes.
+--------------------------------------------------------------------------- */
+@theme {
+  --color-base: #08090a;
+  --color-panel: #0d0f12;
+  --color-raised: #14171b;
+  --color-hover: #1a1e23;
+  --color-line: #23272d;
+  --color-line-soft: #1a1d22;
+
+  --color-fg: #e7e9ee;
+  --color-muted: #8b929d;
+  --color-faint: #596069;
+
+  --color-brand: #7c8cff;
+  --color-brand-dim: #4d5bb8;
+  --color-live: #34d399;
+  --color-idle: #fbbf24;
+  --color-danger: #f87171;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', Menlo, Consolas,
+    monospace;
+
+  --radius-panel: 14px;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-base);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular figures everywhere: this UI is mostly columns of port numbers. */
+  body {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-brand) 35%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 999px;
+    border: 3px solid var(--color-base);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #303740;
+  }
+}
+
+@layer components {
+  .panel {
+    background-color: var(--color-panel);
+    border: 1px solid var(--color-line-soft);
+    border-radius: var(--radius-panel);
+  }
+
+  /* Monospaced identifier chip: service ids, ports, allocation ids. */
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 6px;
+    background-color: var(--color-raised);
+    border: 1px solid var(--color-line-soft);
+    color: var(--color-muted);
+  }
+}
+
+/* Respect users who ask the OS to stop animating things. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

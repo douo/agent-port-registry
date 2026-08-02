@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from typing import Any
 
 from pydantic import ValidationError
@@ -10,15 +11,18 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from apr import __version__
 from apr.domain.errors import AprError, ErrorCode
 from apr.domain.identity import ServiceIdentity
 from apr.domain.models import (
+    AllocationState,
     DeleteRequest,
     EnsureRequest,
     ReleaseRequest,
     ServiceCreateRequest,
     ServiceUpdateRequest,
 )
+from apr.listener.probe import probe_listeners
 from apr.service.ensure import EnsureService, check_allocation_ports
 
 
@@ -315,8 +319,155 @@ async def delete_allocation(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+def _compress_ranges(ports: list[int]) -> list[list[int]]:
+    """[20000, 20001, 20003] -> [[20000, 20001], [20003, 20003]].
+
+    Keeps the payload small when a config excludes wide ranges, and gives the UI
+    heat strip something it can draw directly.
+    """
+    out: list[list[int]] = []
+    for port in sorted(ports):
+        if out and port == out[-1][1] + 1:
+            out[-1][1] = port
+        else:
+            out.append([port, port])
+    return out
+
+
+def _pool_of(request: Request):
+    """Effective port pool (respects a pool injected into app state by tests)."""
+    return _ensure_svc(request).pool
+
+
+def _table_count(repo, table: str) -> int:
+    row = repo.db.fetchone(f"SELECT COUNT(*) AS c FROM {table}")  # noqa: S608
+    return int(row["c"]) if row else 0
+
+
+async def list_listeners(request: Request) -> JSONResponse:
+    """TCP ports currently being listened on locally (ground truth, not registry)."""
+    pool = _pool_of(request)
+    in_pool_only = request.query_params.get("in_pool") in ("1", "true", "yes")
+    listeners = probe_listeners()
+    items = [
+        {"port": info.port, "pid": info.pid, "command": info.command}
+        for info in sorted(listeners.values(), key=lambda i: i.port)
+        if not in_pool_only or pool.start <= info.port <= pool.end
+    ]
+    return JSONResponse({"listeners": items, "count": len(items)})
+
+
+async def get_pool(request: Request) -> JSONResponse:
+    """Port pool shape and occupancy, for the utilization strip."""
+    repo = _repo(request)
+    pool = _pool_of(request)
+
+    total = max(0, pool.end - pool.start + 1)
+    excluded = [p for p in pool.excluded if pool.start <= p <= pool.end]
+    usable = total - len(excluded)
+    claimed = sorted(repo.active_claimed_ports())
+    listening_in_pool = sorted(
+        p for p in probe_listeners() if pool.start <= p <= pool.end
+    )
+
+    return JSONResponse(
+        {
+            "start": pool.start,
+            "end": pool.end,
+            "total": total,
+            "usable": usable,
+            "excluded_count": len(excluded),
+            "excluded_ranges": _compress_ranges(excluded),
+            "claimed": claimed,
+            "claimed_count": len(claimed),
+            "claimed_ranges": _compress_ranges(claimed),
+            "listening_in_pool": listening_in_pool,
+            "free": max(0, usable - len(claimed)),
+            "utilization": round(len(claimed) / usable, 6) if usable else 0.0,
+        }
+    )
+
+
+async def get_overview(request: Request) -> JSONResponse:
+    """Aggregate dashboard payload: one request, everything the KPI row needs."""
+    repo = _repo(request)
+    pool = _pool_of(request)
+    services = repo.list_services()
+    listeners = probe_listeners()
+
+    by_agent: dict[str, int] = {}
+    by_project: dict[str, int] = {}
+    reserved = 0
+    released = 0
+    claimed_ports: list[int] = []
+
+    for svc in services:
+        by_agent[svc.agent_type_key] = by_agent.get(svc.agent_type_key, 0) + 1
+        by_project[svc.agent_project_key] = by_project.get(svc.agent_project_key, 0) + 1
+        for alloc in repo.list_allocations_for_service(svc.id):
+            if alloc.state == AllocationState.RESERVED:
+                reserved += 1
+                claimed_ports.extend(p.port for p in alloc.ports)
+            else:
+                released += 1
+
+    live_ports = [p for p in claimed_ports if p in listeners]
+    # Claimed but nothing is listening: registered yet not actually running.
+    idle_ports = [p for p in claimed_ports if p not in listeners]
+
+    total = max(0, pool.end - pool.start + 1)
+    excluded_in_range = sum(1 for p in pool.excluded if pool.start <= p <= pool.end)
+    usable = total - excluded_in_range
+
+    return JSONResponse(
+        {
+            "version": __version__,
+            "hostname": socket.gethostname(),
+            "services": {
+                "total": len(services),
+                "by_agent": by_agent,
+                "by_project": by_project,
+            },
+            "allocations": {"reserved": reserved, "released": released},
+            "ports": {
+                "claimed": len(claimed_ports),
+                "live": len(live_ports),
+                "idle": len(idle_ports),
+                "idle_ports": sorted(idle_ports),
+            },
+            "pool": {
+                "start": pool.start,
+                "end": pool.end,
+                "usable": usable,
+                "free": max(0, usable - len(claimed_ports)),
+                "utilization": round(len(claimed_ports) / usable, 6) if usable else 0.0,
+            },
+            # Populated from v2 phases 5/6; present from day one so the UI can
+            # render these panels without branching on schema version.
+            "nodes": {
+                "total": _table_count(repo, "nodes"),
+                "snapshots": _table_count(repo, "node_snapshots"),
+            },
+            "forwards": {
+                "active": int(
+                    (
+                        repo.db.fetchone(
+                            "SELECT COUNT(*) AS c FROM port_forwards"
+                            " WHERE state IN ('starting', 'active')"
+                        )
+                        or {"c": 0}
+                    )["c"]
+                ),
+            },
+        }
+    )
+
+
 def api_routes() -> list[Route]:
     return [
+        Route("/v1/overview", get_overview, methods=["GET"]),
+        Route("/v1/listeners", list_listeners, methods=["GET"]),
+        Route("/v1/pool", get_pool, methods=["GET"]),
         Route("/v1/allocations/ensure", ensure_allocation, methods=["POST"]),
         Route("/v1/services", create_service, methods=["POST"]),
         Route("/v1/services", list_services, methods=["GET"]),

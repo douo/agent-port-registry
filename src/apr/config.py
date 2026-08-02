@@ -58,6 +58,7 @@ class Config:
     http_port: int = DEFAULT_HTTP_PORT
     use_unix_socket: bool = True
     auto_start: bool = True
+    web_enabled: bool = False
     port_pool: PortPoolConfig = field(default_factory=PortPoolConfig)
 
     def ensure_dirs(self) -> None:
@@ -81,6 +82,14 @@ class Config:
         if self.use_unix_socket:
             return f"unix:{self.socket_path}"
         return f"http://{self.http_host}:{self.http_port}"
+
+    def web_url(self) -> str:
+        """Browser-facing URL of the Web UI (only bound when web_enabled)."""
+        return f"http://{self.http_host}:{self.http_port}"
+
+    def needs_tcp(self) -> bool:
+        """TCP has to be bound for the API fallback or for the browser UI."""
+        return (not self.use_unix_socket) or self.web_enabled
 
 
 def default_config() -> Config:
@@ -118,7 +127,7 @@ def load_config(
 
     Environment variables (highest precedence after explicit args):
       APR_DATA_DIR, APR_SOCKET, APR_DB, APR_HTTP_HOST, APR_HTTP_PORT,
-      APR_USE_TCP=1, APR_AUTO_START=0, APR_CONFIG
+      APR_USE_TCP=1, APR_AUTO_START=0, APR_CONFIG, APR_WEB=1
     """
     env = env if env is not None else os.environ
     cfg = default_config()
@@ -191,6 +200,19 @@ def load_config(
         cfg.auto_start = False
     elif "auto_start" in file_data:
         cfg.auto_start = bool(file_data["auto_start"])
+
+    web_raw = file_data.get("web")
+    if isinstance(web_raw, dict):
+        if "enabled" in web_raw:
+            cfg.web_enabled = bool(web_raw["enabled"])
+        if web_raw.get("host"):
+            cfg.http_host = str(web_raw["host"])
+        if web_raw.get("port") is not None:
+            cfg.http_port = int(web_raw["port"])
+    if env.get("APR_WEB") in ("1", "true", "True", "yes"):
+        cfg.web_enabled = True
+    elif env.get("APR_WEB") in ("0", "false", "False", "no"):
+        cfg.web_enabled = False
 
     pool_raw = file_data.get("port_pool")
     if isinstance(pool_raw, dict):

@@ -16,6 +16,7 @@ from apr import __version__
 from apr.api.errors import apr_error_handler, unhandled_error_handler
 from apr.api.routes import api_routes
 from apr.domain.errors import AprError
+from apr.webui import webui_routes
 
 
 async def healthz(_request: Request) -> JSONResponse:
@@ -65,6 +66,8 @@ def create_app(*, state: dict[str, Any] | None = None) -> Starlette:
     routes = [
         Route("/healthz", healthz, methods=["GET"]),
         *api_routes(),
+        # Catch-all for the SPA: must stay last so it never shadows the API.
+        *webui_routes(),
     ]
     app = Starlette(
         routes=routes,

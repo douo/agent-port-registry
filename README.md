@@ -121,6 +121,46 @@ svcctl backup /tmp/apr-backup.db
 
 CLI 在 Registry 未启动且 `auto_start=true`（默认）时会尝试后台拉起 `svcctl serve --daemon`。
 
+## Web UI
+
+```bash
+# 临时开启
+uv run svcctl serve --web
+
+# 常驻开启：写入 ~/.config/apr/config.yaml 后重启
+#   web:
+#     enabled: true
+systemctl --user restart apr.service
+```
+
+打开 <http://127.0.0.1:17989>。
+
+开启后 Registry **同时**绑定两个传输：CLI 继续走 Unix socket，浏览器走 `127.0.0.1` TCP。
+TCP 只绑回环，不要暴露到对外网卡（APR 没有鉴权，安全模型依赖本机文件权限）。
+
+界面包含：
+
+| 视图 | 内容 |
+|---|---|
+| 概览 | KPI、端口池占用图、按项目分布、已分配但无监听的端口 |
+| 服务 | 过滤 / 排序 / 实时监听状态 |
+| 服务详情 | 端口与占用进程、元数据、`{{ports.x}}` 渲染后的启动命令、分配历史 |
+| 端口 | 端口反查、池内未登记的监听进程 |
+
+`⌘K` / `Ctrl+K` 打开命令面板。
+
+### 前端开发
+
+终端用户**不需要 Node** —— 构建产物 `src/apr/webui/static/` 已提交进仓库。
+只有修改界面时才需要：
+
+```bash
+cd web
+npm install
+npm run dev     # http://localhost:5273，API 自动代理到 127.0.0.1:17989
+npm run build   # 产物写回 src/apr/webui/static/，需一并提交
+```
+
 ## 架构摘要
 
 ```text
@@ -141,10 +181,12 @@ Agent Skill → svcctl CLI → APR Registry (Unix Socket HTTP) → SQLite
 | 配置 | `~/.config/apr/config.yaml` |
 | 日志 / PID（serve 默认与 data 隔离时见 `data_dir/state/`） | `~/.local/state/apr/` |
 
-环境变量：`APR_DATA_DIR`、`APR_SOCKET`、`APR_DB`、`APR_CONFIG`、`APR_USE_TCP`、`APR_HTTP_PORT`、`APR_AUTO_START`。
+环境变量：`APR_DATA_DIR`、`APR_SOCKET`、`APR_DB`、`APR_CONFIG`、`APR_USE_TCP`、`APR_HTTP_PORT`、`APR_AUTO_START`、`APR_WEB`。
 
 ```yaml
 # ~/.config/apr/config.yaml
+web:
+  enabled: true       # 浏览器 UI，绑定 127.0.0.1:17989
 port_pool:
   start: 20000
   end: 39999

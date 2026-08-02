@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import signal
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Iterator
 
 import typer
 import uvicorn
 
 from apr.api.app import create_app
 from apr.config import Config, load_config
+from apr.webui import is_built as webui_is_built
 
 
 def _write_pid(pid_path: Path) -> None:
@@ -50,23 +53,69 @@ def _daemonize(log_path: Path) -> None:
     os.dup2(devnull.fileno(), sys.stdin.fileno())
 
 
+class _ManagedSignalServer(uvicorn.Server):
+    """A uvicorn Server whose signal handling is owned by :func:`run_server`.
+
+    uvicorn installs its own ``signal.signal`` handler per Server. With two
+    Servers sharing one event loop (Unix socket + TCP) the second would clobber
+    the first's handler, so on SIGTERM only one of them would ever be told to
+    exit and shutdown would hang. We disable per-server capture and drive
+    ``should_exit`` centrally instead.
+    """
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        yield
+
+
+def _uvicorn_configs(cfg: Config, app: object) -> list[uvicorn.Config]:
+    """One Config per transport we need to bind."""
+    configs: list[uvicorn.Config] = []
+    if cfg.use_unix_socket:
+        _remove_stale_socket(cfg.socket_path)
+        configs.append(
+            uvicorn.Config(app, uds=str(cfg.socket_path), log_level="info")
+        )
+    if cfg.needs_tcp():
+        configs.append(
+            uvicorn.Config(
+                app,
+                host=cfg.http_host,
+                port=cfg.http_port,
+                log_level="info",
+            )
+        )
+    return configs
+
+
+async def _serve_all(servers: list[_ManagedSignalServer]) -> None:
+    loop = asyncio.get_running_loop()
+
+    def _request_exit() -> None:
+        for server in servers:
+            server.should_exit = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, _request_exit)
+
+    await asyncio.gather(*(server.serve() for server in servers))
+
+
+def _cleanup_runtime_files(cfg: Config) -> None:
+    try:
+        if cfg.pid_path.exists():
+            cfg.pid_path.unlink()
+    except OSError:
+        pass
+    if cfg.use_unix_socket:
+        _remove_stale_socket(cfg.socket_path)
+
+
 def run_server(cfg: Config) -> None:
     cfg.ensure_dirs()
     _write_pid(cfg.pid_path)
     os.umask(0o077)
-
-    def _cleanup(*_args: object) -> None:
-        try:
-            if cfg.pid_path.exists():
-                cfg.pid_path.unlink()
-        except OSError:
-            pass
-        if cfg.use_unix_socket:
-            _remove_stale_socket(cfg.socket_path)
-        raise SystemExit(0)
-
-    signal.signal(signal.SIGTERM, _cleanup)
-    signal.signal(signal.SIGINT, _cleanup)
 
     app = create_app(
         state={
@@ -75,16 +124,26 @@ def run_server(cfg: Config) -> None:
         }
     )
 
-    if cfg.use_unix_socket:
-        _remove_stale_socket(cfg.socket_path)
-        uvicorn.run(app, uds=str(cfg.socket_path), log_level="info")
-    else:
-        uvicorn.run(
-            app,
-            host=cfg.http_host,
-            port=cfg.http_port,
-            log_level="info",
-        )
+    configs = _uvicorn_configs(cfg, app)
+    if not configs:
+        raise SystemExit("No transport enabled: neither Unix socket nor TCP.")
+
+    if cfg.web_enabled:
+        if webui_is_built():
+            print(f"APR Web UI: {cfg.web_url()}", flush=True)
+        else:
+            print(
+                "APR Web UI requested but no built bundle found "
+                "(src/apr/webui/static/index.html). Run: cd web && npm run build",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    servers = [_ManagedSignalServer(c) for c in configs]
+    try:
+        asyncio.run(_serve_all(servers))
+    finally:
+        _cleanup_runtime_files(cfg)
 
 
 def register(app: typer.Typer) -> None:
@@ -105,7 +164,14 @@ def register(app: typer.Typer) -> None:
         ] = False,
         http_port: Annotated[
             int | None,
-            typer.Option("--http-port", help="TCP port when using --tcp"),
+            typer.Option("--http-port", help="TCP port when using --tcp / --web"),
+        ] = None,
+        web: Annotated[
+            bool | None,
+            typer.Option(
+                "--web/--no-web",
+                help="Also serve the Web UI over 127.0.0.1 TCP (Unix socket stays up)",
+            ),
         ] = None,
     ) -> None:
         """Start the APR Registry (port allocator + service index)."""
@@ -119,6 +185,8 @@ def register(app: typer.Typer) -> None:
             cfg.use_unix_socket = False
         if http_port is not None:
             cfg.http_port = http_port
+        if web is not None:
+            cfg.web_enabled = web
 
         # state_dir comes from XDG / config; load_config colocates under data_dir
         # when a custom data_dir is used (tests / isolation).

@@ -27,3 +27,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# 前端开发依赖（构建产物 src/apr/webui/static/ 是提交的）
+web/node_modules/
+web/dist/
