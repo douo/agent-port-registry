@@ -10,8 +10,18 @@ from apr.domain.errors import AprError, ErrorCode
 from apr.domain.models import ResourceSpec, WithinRange
 
 
-def _pool(start: int = 20000, end: int = 20020, exclude: list | None = None) -> PortPool:
-    return PortPool(start=start, end=end, excluded=parse_exclude(exclude or []))
+def _pool(
+    start: int = 20000,
+    end: int = 20020,
+    exclude: list | None = None,
+    first_fit_start: int | None = None,
+) -> PortPool:
+    return PortPool(
+        start=start,
+        end=end,
+        first_fit_start=first_fit_start,
+        excluded=parse_exclude(exclude or []),
+    )
 
 
 def test_single_first_fit() -> None:
@@ -53,6 +63,59 @@ def test_preferred_port() -> None:
         listening=set(),
     )
     assert result.assignments[0].port == 20010
+
+
+def test_preferred_low_port_before_first_fit_start() -> None:
+    alloc = Allocator(_pool(start=3000, end=45999, first_fit_start=41000))
+    result = alloc.allocate(
+        [ResourceSpec(name="http", type="single", preferred_port=3210)],
+        claimed=set(),
+        listening=set(),
+    )
+    assert result.named_ports()["http"] == 3210
+
+
+def test_unavailable_preferred_port_falls_back_to_priority_band() -> None:
+    alloc = Allocator(_pool(start=3000, end=45999, first_fit_start=41000))
+    result = alloc.allocate(
+        [ResourceSpec(name="http", type="single", preferred_port=5173)],
+        claimed={5173},
+        listening=set(),
+    )
+    assert result.named_ports()["http"] == 41000
+
+
+def test_first_fit_wraps_to_lower_band_after_priority_band_is_full() -> None:
+    alloc = Allocator(_pool(start=3000, end=41001, first_fit_start=41000))
+    result = alloc.allocate(
+        [ResourceSpec(name="http", type="single")],
+        claimed={41000, 41001},
+        listening=set(),
+    )
+    assert result.named_ports()["http"] == 3000
+
+
+def test_count_and_block_use_priority_band() -> None:
+    alloc = Allocator(_pool(start=3000, end=45999, first_fit_start=41000))
+    result = alloc.allocate(
+        [
+            ResourceSpec(
+                name="named",
+                type="count",
+                count=2,
+                port_names=["api", "metrics"],
+            ),
+            ResourceSpec(name="workers", type="block", size=2),
+        ],
+        claimed=set(),
+        listening=set(),
+    )
+    assert result.named_ports() == {"api": 41000, "metrics": 41001}
+    assert result.blocks()["workers"] == {
+        "start": 41002,
+        "end": 41003,
+        "size": 2,
+    }
 
 
 def test_strict_preferred_unavailable() -> None:

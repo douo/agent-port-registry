@@ -58,6 +58,9 @@ process_management:
 port_pool:
   start: {DEFAULT_PORT_POOL_START}
   end: {DEFAULT_PORT_POOL_END}
+  # Optional: accept explicit lower preferred ports while automatic allocation
+  # starts in a higher-priority band and only wraps lower if that band is full.
+  # first_fit_start: {DEFAULT_PORT_POOL_START}
   exclude: []
   # exclude examples:
   # - 22000

@@ -11,6 +11,7 @@ from apr.config import PortPoolConfig
 class PortPool:
     start: int
     end: int
+    first_fit_start: int | None = None
     excluded: set[int] = field(default_factory=set)
 
     @classmethod
@@ -18,11 +19,19 @@ class PortPool:
         return cls(
             start=cfg.start,
             end=cfg.end,
+            first_fit_start=cfg.first_fit_start,
             excluded=parse_exclude(cfg.exclude),
         )
 
     def contains(self, port: int) -> bool:
         return self.start <= port <= self.end and port not in self.excluded
+
+    def first_fit_ranges(self, start: int, end: int) -> list[tuple[int, int]]:
+        """Return scan ranges with the configured high-priority band first."""
+        anchor = self.first_fit_start
+        if anchor is None or anchor <= start or anchor > end:
+            return [(start, end)]
+        return [(anchor, end), (start, anchor - 1)]
 
 
 def parse_exclude(items: list[str | int]) -> set[int]:

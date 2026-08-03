@@ -208,9 +208,10 @@ class Allocator:
                 )
             # fall through to first fit
 
-        for port in range(start, end + 1):
-            if self._is_free(port, unavailable, start, end):
-                return port
+        for scan_start, scan_end in self.pool.first_fit_ranges(start, end):
+            for port in range(scan_start, scan_end + 1):
+                if self._is_free(port, unavailable, start, end):
+                    return port
         raise AprError(
             ErrorCode.PORT_CAPACITY_EXHAUSTED,
             f"No free port available in {start}-{end} for resource '{resource.name}'.",
@@ -221,19 +222,20 @@ class Allocator:
     ) -> int:
         if size < 1:
             raise AprError(ErrorCode.INVALID_REQUEST, "size/count must be >= 1")
-        limit = end - size + 1
-        p = start
-        while p <= limit:
-            ok = True
-            for i in range(size):
-                port = p + i
-                if not self._is_free(port, unavailable, start, end):
-                    ok = False
-                    # jump past the blocking port
-                    p = port + 1
-                    break
-            if ok:
-                return p
+        for scan_start, scan_end in self.pool.first_fit_ranges(start, end):
+            limit = scan_end - size + 1
+            p = scan_start
+            while p <= limit:
+                ok = True
+                for i in range(size):
+                    port = p + i
+                    if not self._is_free(port, unavailable, start, end):
+                        ok = False
+                        # jump past the blocking port
+                        p = port + 1
+                        break
+                if ok:
+                    return p
         raise AprError(
             ErrorCode.PORT_CAPACITY_EXHAUSTED,
             f"No contiguous block of {size} ports is available in {start}-{end}.",
@@ -243,11 +245,12 @@ class Allocator:
         self, n: int, start: int, end: int, unavailable: set[int]
     ) -> list[int]:
         found: list[int] = []
-        for port in range(start, end + 1):
-            if self._is_free(port, unavailable, start, end):
-                found.append(port)
-                if len(found) == n:
-                    return found
+        for scan_start, scan_end in self.pool.first_fit_ranges(start, end):
+            for port in range(scan_start, scan_end + 1):
+                if self._is_free(port, unavailable, start, end):
+                    found.append(port)
+                    if len(found) == n:
+                        return found
         raise AprError(
             ErrorCode.PORT_CAPACITY_EXHAUSTED,
             f"Need {n} free ports in {start}-{end}, found only {len(found)}.",

@@ -24,14 +24,66 @@ APR integration and APR does not adapt itself around an already chosen port.
    - a device move;
    - a missing or intentionally changed port configuration.
 
+## Requesting an existing service port
+
+When first onboarding a service that already has local consumers bound to its
+current port, use APR's preferred-port request as a temporary compatibility
+workaround. This is a preference, not a fixed-port import or an allocation made
+by the Agent:
+
+- The requested port must be inside the local APR port pool.
+- A pool may set `first_fit_start` above its lower bound. Explicit available
+  preferences may still use the full pool, while automatic fallback allocation
+  scans from `first_fit_start` and only wraps lower if the priority band is full.
+- Send a `single` resource with `preferred_port` and leave
+  `strict_preferred` false (the default).
+- If APR returns the requested port, the preference was accepted.
+- If APR returns a different port, the preference was rejected and the returned
+  APR port is authoritative. Persist the returned port; do not keep using the
+  rejected request.
+- A listener already occupying the requested port makes it unavailable. For a
+  known existing service being onboarded, stop that exact service briefly,
+  ensure its preferred port, persist the response, and start it normally.
+- Use `within: {"start": ..., "end": ...}` to constrain a resource to a
+  range. `preferred_port` itself is one port, not a range.
+- For several existing fixed ports, send several `single` resources, each with
+  its own name and `preferred_port`. Use `count` or `block` when specific
+  per-port preferences are not required.
+
+Example with two existing ports:
+
+```json
+{
+  "resources": [
+    {
+      "name": "http",
+      "type": "single",
+      "transport": "tcp",
+      "preferred_port": 3210,
+      "strict_preferred": false,
+      "within": {"start": 3000, "end": 45999}
+    },
+    {
+      "name": "metrics",
+      "type": "single",
+      "transport": "tcp",
+      "preferred_port": 9001,
+      "strict_preferred": false
+    }
+  ]
+}
+```
+
 ## First-configuration workflow
 
 1. Confirm this Agent is scoped to the node that actually runs the service,
    then identify the project, stable service key and instance.
 2. Collect useful metadata: project origin, description, code path, working
    directory, default start/stop commands, health check, and configuration location.
-3. Request the required TCP/UDP resources with `svcctl ensure`.
-4. Parse the returned ports and verify availability.
+3. Request the required TCP/UDP resources with `svcctl ensure`. For an existing
+   port preference, use the JSON request form described above.
+4. Parse the returned ports, compare any preference with the response, and
+   verify availability. The response, not `preferred_port`, is authoritative.
 5. Write the assigned values into the service's normal source of truth, such as:
    - its default startup script or checked-in development command;
    - `.env` or another local environment file;
@@ -75,6 +127,7 @@ EOF
 
 - Never make `ensure` a dependency of every service start.
 - Never choose a formal service port directly or assume a common port is free.
+  `preferred_port` is only a request; APR's returned port is authoritative.
 - Persist the returned fixed port before treating first configuration as complete.
 - Agent type is audit metadata, not service identity.
 - Call `ensure` only on the APR instance local to the service. A master APR must

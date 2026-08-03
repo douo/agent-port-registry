@@ -56,6 +56,7 @@ def _xdg_state_home() -> Path:
 class PortPoolConfig:
     start: int = DEFAULT_PORT_POOL_START
     end: int = DEFAULT_PORT_POOL_END
+    first_fit_start: int | None = None
     exclude: list[str | int] = field(default_factory=list)
 
 
@@ -137,6 +138,11 @@ def _parse_port_pool(raw: dict[str, Any] | None) -> PortPoolConfig:
     return PortPoolConfig(
         start=int(raw.get("start", DEFAULT_PORT_POOL_START)),
         end=int(raw.get("end", DEFAULT_PORT_POOL_END)),
+        first_fit_start=(
+            int(raw["first_fit_start"])
+            if raw.get("first_fit_start") is not None
+            else None
+        ),
         exclude=list(raw.get("exclude") or []),
     )
 
