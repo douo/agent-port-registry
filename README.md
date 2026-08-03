@@ -352,12 +352,19 @@ Host p44
 
 ## Agent 集成
 
-`skills/` 提供统一 APR 工作流及 Codex、Claude Code、Grok Build 适配说明：
+`skills/` 提供所有 Agent 共用的 APR 工作流：
 
 ```bash
-npx skills@latest add ./skills/codex -g -a codex -y --copy
-npx skills@latest list -g -a codex
+# 在仓库根目录执行；所有入口都指向同一目录，软链接会随 git pull 自动同步
+mkdir -p ~/.agents/skills ~/.codex/skills ~/.claude/skills ~/.grok/skills
+ln -s "$(pwd)/skills/agent-port-registry" ~/.agents/skills/agent-port-registry
+ln -s "$(pwd)/skills/agent-port-registry" ~/.codex/skills/agent-port-registry
+ln -s "$(pwd)/skills/agent-port-registry" ~/.claude/skills/agent-port-registry
+ln -s "$(pwd)/skills/agent-port-registry" ~/.grok/skills/agent-port-registry
 ```
+
+如果环境不支持软链接，再使用 `npx skills@latest add
+./skills/agent-port-registry -g -a codex -y --copy` 安装副本。
 
 所有 Agent 都遵守同一原则：在目标节点本地 ensure、持久化端口、不替远端节点
 修改服务注册表。

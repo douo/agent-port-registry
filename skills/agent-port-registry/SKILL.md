@@ -3,14 +3,19 @@ name: agent-port-registry
 description: >
   Use when developing a new local HTTP/API service, onboarding a third-party
   service for the first time, moving a service to another device, or explicitly
-  changing its port configuration. Obtain a fixed port from APR and persist it
-  into the service's normal startup configuration. Do not run ensure on every restart.
+  changing its port configuration. Obtain a fixed port from APR, persist it in
+  the service's normal startup configuration, and set agent.type to the current
+  Agent identifier. Do not run ensure on every restart.
 ---
 
 # Agent Port Registry
 
 APR is Agents-first: the Agent configures the service. The service does not need
 APR integration and APR does not adapt itself around an already chosen port.
+
+The same workflow applies to every Agent. Set `agent.type` to the current
+Agent's stable identifier, such as `codex`, `claude-code`, `grok-build`, or
+`antigravity`. This value is audit metadata, not service identity.
 
 ## Decide whether ensure is needed
 
@@ -96,10 +101,13 @@ Example with two existing ports:
 
 ## Request example
 
+Use the current Agent's identifier in `agent.type`; do not hard-code `codex`
+when another Agent is performing the configuration.
+
 ```bash
 cat <<'EOF' | svcctl ensure --json -
 {
-  "agent": { "type": "codex" },
+  "agent": { "type": "<current-agent-type>" },
   "service": {
     "key": "model-api",
     "instance": "main",
@@ -129,7 +137,8 @@ EOF
 - Never choose a formal service port directly or assume a common port is free.
   `preferred_port` is only a request; APR's returned port is authoritative.
 - Persist the returned fixed port before treating first configuration as complete.
-- Agent type is audit metadata, not service identity.
+- `agent.type` is audit metadata, not service identity; use the current Agent's
+  identifier.
 - Call `ensure` only on the APR instance local to the service. A master APR must
   never call remote `ensure` or mutate a slave registry.
 - Service identity inside one APR is project + service key + instance; the APR
