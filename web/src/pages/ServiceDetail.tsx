@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
+  ExternalLink,
   Pencil,
   Plus,
   Square,
@@ -31,7 +32,7 @@ import {
   Loading,
   Panel,
   PanelHeader,
-  StatusDot,
+  StatusBadge,
 } from '../components/ui'
 
 /** Preview of `start_command` with {{ports.x}} resolved. */
@@ -272,7 +273,11 @@ export default function ServiceDetail() {
           {remote ? `返回 ${nodeName}` : '返回服务列表'}
         </Link>
         <div className="flex flex-wrap items-center gap-3">
-          <StatusDot live={anyLive || running} />
+          <StatusBadge
+            live={anyLive || running}
+            liveLabel={remote ? '运行中' : '监听中'}
+            idleLabel={remote ? '未运行' : '未监听'}
+          />
           <h2 className="text-xl">{s.name}</h2>
           <span className="chip">{s.id}</span>
           {remote && <span className="chip">远端 · {nodeName}</span>}
@@ -385,16 +390,21 @@ export default function ServiceDetail() {
                       <td className="py-2.5 pr-3">
                         {remote ? (
                           <span className="chip">{p.port}</span>
-                        ) : (
+                        ) : listener ? (
                           <a
                             href={`http://127.0.0.1:${p.port}`}
                             target="_blank"
                             rel="noreferrer"
-                            className="chip transition-colors hover:border-brand/50 hover:text-brand"
-                            title="在新标签打开 http://127.0.0.1:该端口"
+                            className="chip inline-flex items-center gap-1 border-live/30 text-live transition-colors hover:border-live/60 hover:bg-live/10"
+                            title={`打开 http://127.0.0.1:${p.port}`}
                           >
                             {p.port}
+                            <ExternalLink size={11} aria-hidden="true" />
                           </a>
+                        ) : (
+                          <span className="chip" title={`http://127.0.0.1:${p.port} 当前未监听`}>
+                            {p.port}
+                          </span>
                         )}
                       </td>
                       <td className="py-2.5 pr-3">
@@ -408,6 +418,7 @@ export default function ServiceDetail() {
                                 className="chip border-live/30 text-live transition-colors hover:border-live/60"
                               >
                                 localhost:{forward.local_port}
+                                <ExternalLink size={11} aria-hidden="true" />
                               </a>
                             ) : (
                               <span className="text-xs text-idle">

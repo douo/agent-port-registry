@@ -70,6 +70,33 @@ export function StatusDot({ live }: { live: boolean }) {
   )
 }
 
+export function StatusBadge({
+  live,
+  liveLabel = '监听中',
+  idleLabel = '未监听',
+}: {
+  live: boolean
+  liveLabel?: string
+  idleLabel?: string
+}) {
+  const label = live ? liveLabel : idleLabel
+  return (
+    <span
+      title={live ? '端口有进程在监听' : '已登记但无进程监听'}
+      className={[
+        'inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium',
+        live ? 'bg-live/10 text-live' : 'bg-idle/10 text-idle',
+      ].join(' ')}
+    >
+      <span
+        aria-hidden="true"
+        className={['h-1.5 w-1.5 rounded-full', live ? 'bg-live' : 'bg-idle/70'].join(' ')}
+      />
+      {label}
+    </span>
+  )
+}
+
 export function Loading({ label = '加载中…' }: { label?: string }) {
   return (
     <div className="flex items-center gap-2 px-4 py-10 text-sm text-faint">

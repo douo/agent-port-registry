@@ -1,17 +1,16 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Plus, Search } from 'lucide-react'
+import { ExternalLink, Plus, Search } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
 import { relativeTime, serviceAgentLabel, servicePorts, serviceProjectKey } from '../lib/format'
 import EnsureForm from '../components/EnsureForm'
-import { Button, Empty, ErrorNote, Loading, Panel, StatusDot } from '../components/ui'
+import { Button, Empty, ErrorNote, Loading, Panel, StatusBadge } from '../components/ui'
 
 type SortKey = 'port' | 'name' | 'project' | 'updated'
 
 export default function Services() {
   const [query, setQuery] = useState('')
-  const [project, setProject] = useState<string | null>(null)
   const [sort, setSort] = useState<SortKey>('port')
   const [ensureOpen, setEnsureOpen] = useState(false)
 
@@ -22,11 +21,6 @@ export default function Services() {
     [pool.data],
   )
 
-  const projects = useMemo(() => {
-    const names = new Set((services.data ?? []).map(serviceProjectKey))
-    return [...names].sort()
-  }, [services.data])
-
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return (services.data ?? [])
@@ -35,7 +29,6 @@ export default function Services() {
         return { service, ports, live: ports.some((p) => listening.has(p.port)) }
       })
       .filter(({ service, ports }) => {
-        if (project && serviceProjectKey(service) !== project) return false
         if (!needle) return true
         return [
           service.name,
@@ -65,7 +58,7 @@ export default function Services() {
             return (a.ports[0]?.port ?? Infinity) - (b.ports[0]?.port ?? Infinity)
         }
       })
-  }, [services.data, query, project, sort, listening])
+  }, [services.data, query, sort, listening])
 
   if (services.isError) return <ErrorNote error={services.error} />
 
@@ -85,21 +78,6 @@ export default function Services() {
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <FilterChip active={project === null} onClick={() => setProject(null)}>
-            全部
-          </FilterChip>
-          {projects.map((name) => (
-            <FilterChip
-              key={name}
-              active={project === name}
-              onClick={() => setProject(project === name ? null : name)}
-            >
-              {name}
-            </FilterChip>
-          ))}
-        </div>
-
         <Button variant="primary" onClick={() => setEnsureOpen(true)} className="shrink-0">
           <Plus size={14} />
           首次配置服务
@@ -111,10 +89,10 @@ export default function Services() {
           <Loading />
         ) : rows.length === 0 ? (
           <Empty
-            title={query || project ? '没有匹配的服务' : '还没有登记任何服务'}
+            title={query ? '没有匹配的服务' : '还没有登记任何服务'}
             hint={
-              query || project
-                ? '换个关键词，或清除项目筛选'
+              query
+                ? '换个关键词'
                 : '由 Agent 首次配置服务时分配端口，并写入服务的默认启动配置'
             }
           />
@@ -122,7 +100,7 @@ export default function Services() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line-soft text-left text-xs text-faint">
-                <th className="w-8 py-2.5 pl-4" />
+                <th className="w-24 py-2.5 pl-4 font-normal">状态</th>
                 <SortHeader active={sort === 'name'} onClick={() => setSort('name')}>
                   服务
                 </SortHeader>
@@ -151,8 +129,8 @@ export default function Services() {
                   key={service.id}
                   className="group border-b border-line-soft/60 transition-colors last:border-0 hover:bg-hover/60"
                 >
-                  <td className="py-2.5 pl-4 align-middle">
-                    <StatusDot live={live} />
+                  <td className="py-2.5 pl-4 pr-3 align-middle">
+                    <StatusBadge live={live} />
                   </td>
                   <td className="py-2.5 pr-3">
                     <Link to={`/services/${service.id}`} className="block min-w-0">
@@ -178,15 +156,26 @@ export default function Services() {
                       {ports.length === 0 ? (
                         <span className="text-xs text-faint">无</span>
                       ) : (
-                        ports.map((p) => (
-                          <span
-                            key={p.port}
-                            className="chip"
-                            title={`${p.label} = ${p.port}`}
-                          >
-                            {p.port}
-                          </span>
-                        ))
+                        ports.map((p) => {
+                          const portLive = listening.has(p.port)
+                          return portLive ? (
+                            <a
+                              key={p.port}
+                              href={`http://127.0.0.1:${p.port}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="chip inline-flex items-center gap-1 border-live/30 text-live transition-colors hover:border-live/60 hover:bg-live/10"
+                              title={`打开 http://127.0.0.1:${p.port} · ${p.label}`}
+                            >
+                              {p.port}
+                              <ExternalLink size={11} aria-hidden="true" />
+                            </a>
+                          ) : (
+                            <span key={p.port} className="chip" title={`${p.label} = ${p.port}`}>
+                              {p.port}
+                            </span>
+                          )
+                        })
                       )}
                     </div>
                   </td>
@@ -211,31 +200,6 @@ export default function Services() {
 
       <EnsureForm open={ensureOpen} onClose={() => setEnsureOpen(false)} />
     </div>
-  )
-}
-
-function FilterChip({
-  children,
-  active,
-  onClick,
-}: {
-  children: React.ReactNode
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        'rounded-full border px-2.5 py-1 text-xs transition-colors',
-        active
-          ? 'border-brand/50 bg-brand/15 text-brand'
-          : 'border-line-soft text-muted hover:border-line hover:text-fg',
-      ].join(' ')}
-    >
-      {children}
-    </button>
   )
 }
 
