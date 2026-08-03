@@ -114,12 +114,19 @@ async def ensure_allocation(request: Request) -> JSONResponse:
     return JSONResponse(result.model_dump(mode="json"), status_code=200)
 
 
-def _service_detail(repo, svc, *, process_manager: ProcessManager | None = None) -> dict[str, Any]:
+def _service_detail(
+    repo,
+    svc,
+    *,
+    process_manager: ProcessManager | None = None,
+    listeners: dict[int, Any] | None = None,
+) -> dict[str, Any]:
     allocs = repo.list_allocations_for_service(svc.id)
     process = None
+    runtime = None
     if process_manager is not None:
-        # Reconcile orphans so the UI never shows a zombie "running" badge.
-        live = process_manager.reconcile(svc.id)
+        runtime = process_manager.runtime_status(svc.id, listeners=listeners)
+        live = process_manager.get_live(svc.id)
         latest = live or process_manager.get_latest(svc.id)
         if latest is not None:
             process = latest.to_dict()
@@ -151,6 +158,7 @@ def _service_detail(repo, svc, *, process_manager: ProcessManager | None = None)
             for a in allocs
         ],
         "process": process,
+        "runtime": runtime,
     }
 
 
@@ -188,6 +196,7 @@ async def create_service(request: Request) -> JSONResponse:
         stop_command=req.service.stop_command,
         health_check=req.service.health_check,
         configuration=req.service.configuration,
+        auto_start=bool(req.service.auto_start),
         project_origin=req.service.project_origin,
         registered_by_agent=agent.type if agent else None,
     )
@@ -210,7 +219,11 @@ async def list_services(request: Request) -> JSONResponse:
         device_id=device_id,
     )
     mgr = _process_mgr(request)
-    items = [_service_detail(repo, s, process_manager=mgr) for s in services]
+    listeners = probe_listeners()
+    items = [
+        _service_detail(repo, s, process_manager=mgr, listeners=listeners)
+        for s in services
+    ]
     return JSONResponse({"services": items})
 
 
@@ -262,9 +275,12 @@ async def patch_service(request: Request) -> JSONResponse:
         stop_command=req.stop_command,
         health_check=req.health_check,
         configuration=req.configuration,
+        auto_start=req.auto_start,
         project_origin=req.project_origin,
     )
-    return JSONResponse(updated.model_dump(mode="json"))
+    return JSONResponse(
+        _service_detail(repo, updated, process_manager=_process_mgr(request))
+    )
 
 
 async def get_port(request: Request) -> JSONResponse:
@@ -581,17 +597,19 @@ async def get_service_logs(request: Request) -> JSONResponse:
 
 
 async def get_service_process(request: Request) -> JSONResponse:
-    """Latest (or live) managed process for a service, after reconciliation."""
+    """Latest managed process plus current managed/external runtime observation."""
     service_id = request.path_params["service_id"]
     mgr = _process_mgr(request)
     if mgr.repo.get_service(service_id) is None:
         raise AprError(ErrorCode.SERVICE_NOT_FOUND, f"Service not found: {service_id}")
-    live = mgr.reconcile(service_id)
+    runtime = mgr.runtime_status(service_id)
+    live = mgr.get_live(service_id)
     latest = live or mgr.get_latest(service_id)
     return JSONResponse(
         {
             "service_id": service_id,
             "process": latest.to_dict() if latest else None,
+            "runtime": runtime,
         }
     )
 

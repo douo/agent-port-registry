@@ -75,6 +75,7 @@ class ServiceInput(BaseModel):
     stop_command: str | None = None
     health_check: str | None = None
     configuration: str | None = None
+    auto_start: bool | None = None
 
 
 class EnsureRequest(BaseModel):
@@ -117,6 +118,7 @@ class ServiceUpdateRequest(BaseModel):
     stop_command: str | None = None
     health_check: str | None = None
     configuration: str | None = None
+    auto_start: bool | None = None
     project_origin: Literal["self-built", "third-party-open-source", "external"] | None = None
 
 
@@ -153,6 +155,7 @@ class ServiceRecord(BaseModel):
     stop_command: str | None = None
     health_check: str | None = None
     configuration: str | None = None
+    auto_start: bool = False
     created_at: str
     updated_at: str
 

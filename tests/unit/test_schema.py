@@ -62,6 +62,44 @@ def test_fresh_database_has_current_schema(tmp_path: Path) -> None:
         assert conn.execute(
             "SELECT name FROM nodes WHERE id = 'NODE_LOCAL'"
         ).fetchone()[0] == "本机"
+        service_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(services)")
+        }
+        assert "auto_start" in service_columns
+    db.close()
+
+
+def test_existing_database_gets_additive_auto_start_column(tmp_path: Path) -> None:
+    path = tmp_path / "existing.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE services (
+            id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            project_key TEXT NOT NULL,
+            service_key TEXT NOT NULL,
+            instance_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO services VALUES (
+            'SVC_OLD', 'NODE_LOCAL', 'p', 's', 'default', 'Old', 'now', 'now'
+        );
+        """
+    )
+    conn.close()
+
+    db = Database(path)
+    with db.connection() as db_conn:
+        columns = {
+            row[1] for row in db_conn.execute("PRAGMA table_info(services)")
+        }
+    assert "auto_start" in columns
+    assert db.fetchone(
+        "SELECT auto_start FROM services WHERE id = 'SVC_OLD'"
+    )["auto_start"] == 0
     db.close()
 
 

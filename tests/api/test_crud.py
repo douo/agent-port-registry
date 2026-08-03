@@ -44,12 +44,14 @@ def test_service_crud(client: TestClient) -> None:
                 "project_id": "p",
                 "name": "Demo",
                 "description": "d1",
+                "auto_start": True,
             },
         },
     )
     assert r.status_code == 201, r.text
     sid = r.json()["id"]
     assert r.json()["allocations"] == []
+    assert r.json()["auto_start"] is True
 
     # Conflict on same identity
     r2 = client.post(
@@ -73,10 +75,14 @@ def test_service_crud(client: TestClient) -> None:
     assert g.json()["name"] == "Demo"
 
     # Update
-    u = client.patch(f"/v1/services/{sid}", json={"description": "d2", "name": "Demo2"})
+    u = client.patch(
+        f"/v1/services/{sid}",
+        json={"description": "d2", "name": "Demo2", "auto_start": False},
+    )
     assert u.status_code == 200
     assert u.json()["description"] == "d2"
     assert u.json()["name"] == "Demo2"
+    assert u.json()["auto_start"] is False
 
     # List
     lst = client.get("/v1/services")

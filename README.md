@@ -98,6 +98,7 @@ $EDITOR ~/.config/apr/config.yaml
 
 ```yaml
 use_unix_socket: true
+# CLI 在 APR 不可达时是否尝试启动 APR 自身；不是服务级自启动。
 auto_start: true
 
 web:
@@ -235,6 +236,7 @@ cat <<'EOF' | uv run svcctl ensure --json -
     "start_command": "./scripts/start --port {{ports.http}}",
     "stop_command": "./scripts/stop",
     "health_check": "http://127.0.0.1:{{ports.http}}/healthz",
+    "auto_start": true,
     "configuration": ".env.local: MODEL_API_PORT"
   },
   "allocation_name": "default",
@@ -272,7 +274,16 @@ uv run svcctl process start <service_id>
 uv run svcctl process status <service_id>
 uv run svcctl process logs <service_id> --tail 200
 uv run svcctl process stop <service_id>
+
+# 配置单个服务随本机 APR 启动；关闭使用 --no-auto-start
+uv run svcctl service update <service_id> --auto-start
 ```
+
+服务详情与 `svcctl process status` 同时返回 `process` 和 `runtime`。`process` 只表示
+APR 启动并管理的进程；`runtime.source=external` 表示 APR 在该服务已分配的 TCP
+端口上发现了外部 Listener。外部进程会阻止重复启动，但 APR 不会停止或接管它。
+没有已分配 TCP 端口的外部进程无法可靠识别，状态会保持 `unknown`，自动启动也会
+保守跳过；用户仍可显式执行 `process start`。
 
 释放端口 Claim 会保留历史；彻底删除才移除记录：
 

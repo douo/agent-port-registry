@@ -102,6 +102,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
   const [stopCommand, setStopCommand] = useState(service?.stop_command ?? '')
   const [healthCheck, setHealthCheck] = useState(service?.health_check ?? '')
   const [configuration, setConfiguration] = useState(service?.configuration ?? '')
+  const [autoStart, setAutoStart] = useState(service?.auto_start ?? false)
   const [allocationName, setAllocationName] = useState(isExisting ? '' : 'default')
   const [resources, setResources] = useState<ResourceDraft[]>([emptyResource()])
   const [localError, setLocalError] = useState<string | null>(null)
@@ -130,6 +131,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
     setStopCommand(service?.stop_command ?? '')
     setHealthCheck(service?.health_check ?? '')
     setConfiguration(service?.configuration ?? '')
+    setAutoStart(service?.auto_start ?? false)
     setAllocationName(
       service ? `alloc-${Date.now().toString(36).slice(-4)}` : 'default',
     )
@@ -185,6 +187,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
         stop_command: stopCommand.trim() || null,
         health_check: healthCheck.trim() || null,
         configuration: configuration.trim() || null,
+        auto_start: autoStart,
       },
       allocation_name: allocationName.trim() || 'default',
       resources: specs,
@@ -337,6 +340,16 @@ export default function EnsureForm({ open, onClose, service }: Props) {
                 disabled={mutation.isPending}
               />
             </div>
+            <label className="flex items-center gap-3 rounded-lg border border-line-soft bg-raised px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={autoStart}
+                onChange={(e) => setAutoStart(e.target.checked)}
+                disabled={mutation.isPending}
+                className="h-4 w-4 accent-brand"
+              />
+              <span>随 APR 自启动</span>
+            </label>
             <div>
               <FieldLabel htmlFor="stop-cmd">停止命令</FieldLabel>
               <TextTextarea

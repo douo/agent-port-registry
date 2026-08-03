@@ -101,6 +101,13 @@ def register(app: typer.Typer) -> None:
             Optional[str],
             typer.Option("--configuration", help="Where the Agent persists the port"),
         ] = None,
+        auto_start: Annotated[
+            Optional[bool],
+            typer.Option(
+                "--auto-start/--no-auto-start",
+                help="Start this service when APR starts",
+            ),
+        ] = None,
         project_origin: Annotated[
             Optional[str],
             typer.Option("--project-origin", help="self-built, third-party-open-source, external"),
@@ -174,6 +181,7 @@ def register(app: typer.Typer) -> None:
                     "stop_command": stop_command,
                     "health_check": health_check,
                     "configuration": configuration,
+                    "auto_start": auto_start,
                 },
                 "allocation_name": allocation_name,
                 "resources": resources,

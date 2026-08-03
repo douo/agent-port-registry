@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertTriangle,
   ArrowLeft,
+  Eye,
   ExternalLink,
   Pencil,
   Plus,
@@ -238,13 +240,33 @@ export default function ServiceDetail() {
     for (const p of alloc.ports) portMap[p.port_name ?? p.resource_name] = p.port
   }
   const process = s.process ?? null
+  const runtime = s.runtime ?? null
   // Backend reconcile should clear dead "running" rows; still require alive so a
   // stale payload never shows 启动中 after command-not-found.
   const running =
     process != null &&
     (process.state === 'starting' || process.state === 'running') &&
     process.alive === true
-  const anyLive = remote ? running : Object.values(portMap).some((p) => listeners.has(p))
+  const fallbackExternalListeners =
+    !remote && runtime == null && !running
+      ? [...new Set(Object.values(portMap))].flatMap((port) => {
+          const listener = listeners.get(port)
+          return listener ? [listener] : []
+        })
+      : []
+  const runtimeActive = runtime
+    ? runtime.state === 'running'
+    : remote
+      ? running
+      : Object.values(portMap).some((p) => listeners.has(p))
+  const runtimeUnknown = runtime?.state === 'unknown'
+  const externalListeners =
+    runtime?.source === 'external' ? runtime.listeners : fallbackExternalListeners
+  const externalRunning =
+    runtimeActive &&
+    !running &&
+    (runtime?.source === 'external' || fallbackExternalListeners.length > 0)
+  const externalPid = externalListeners.find((listener) => listener.pid != null)?.pid
   const startFailed = process?.state === 'failed'
   const hasStartCommand = Boolean(s.start_command?.trim())
   const processBusy = startMut.isPending || stopMut.isPending
@@ -274,9 +296,9 @@ export default function ServiceDetail() {
         </Link>
         <div className="flex flex-wrap items-center gap-3">
           <StatusBadge
-            live={anyLive || running}
-            liveLabel={remote ? '运行中' : '监听中'}
-            idleLabel={remote ? '未运行' : '未监听'}
+            live={runtimeActive}
+            liveLabel="运行中"
+            idleLabel={runtimeUnknown ? '状态未知' : '未运行'}
           />
           <h2 className="text-xl">{s.name}</h2>
           <span className="chip">{s.id}</span>
@@ -284,6 +306,12 @@ export default function ServiceDetail() {
           {running && (
             <span className="rounded bg-live/15 px-1.5 py-0.5 text-[11px] text-live">
               进程运行中 · pid {process?.pid}
+            </span>
+          )}
+          {externalRunning && (
+            <span className="rounded bg-idle/15 px-1.5 py-0.5 text-[11px] text-idle">
+              外部进程运行中 · APR 仅监测
+              {externalPid ? ` · pid ${externalPid}` : ''}
             </span>
           )}
           {startFailed && !running && (
@@ -306,7 +334,15 @@ export default function ServiceDetail() {
                   <Square size={14} />
                   {stopMut.isPending ? '停止中…' : '停止'}
                 </Button>
-              ) : (
+              ) : externalRunning ? (
+                <span
+                  className="inline-flex items-center gap-1.5 rounded border border-idle/25 bg-idle/10 px-3 py-1.5 text-sm text-idle"
+                  title="该进程不是由 APR 启动，APR 不能停止它"
+                >
+                  <Eye size={14} />
+                  APR 仅监测
+                </span>
+              ) : !runtimeActive ? (
                 <Button
                   variant="primary"
                   onClick={() => {
@@ -318,7 +354,7 @@ export default function ServiceDetail() {
                   <Play size={14} />
                   {startMut.isPending ? '启动中…' : '启动'}
                 </Button>
-              )
+              ) : null
             )}
             {!remote && (
               <>
@@ -503,9 +539,11 @@ export default function ServiceDetail() {
                 ? '进程管理未开启'
                 : running
                   ? `pid ${process?.pid}`
-                  : process
-                    ? process.state
-                    : '未启动'
+                  : externalRunning
+                    ? `外部进程${externalPid ? ` · pid ${externalPid}` : ''}`
+                    : process
+                      ? process.state
+                      : '未启动'
             }
             action={
               pmEnabled ? (
@@ -533,6 +571,26 @@ export default function ServiceDetail() {
             </div>
           ) : (
             <div className="space-y-3 px-4 py-3">
+              {externalRunning && (
+                <div className="flex items-start gap-2.5 rounded border border-idle/25 bg-idle/5 px-3 py-2.5 text-xs text-idle">
+                  <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="font-medium">外部进程运行中</div>
+                    <p className="mt-1 text-muted">
+                      该进程不是由 APR 启动。APR 只能监测它的监听状态，不能停止该进程。
+                    </p>
+                    {externalListeners.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {externalListeners.map((listener) => (
+                          <span key={listener.port} className="chip">
+                            端口 {listener.port} · pid {listener.pid ?? '?'}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               {process ? (
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
                   <span className="chip">{process.id}</span>
@@ -632,6 +690,7 @@ export default function ServiceDetail() {
               <span className="text-faint">—</span>
             )}
           </Field>
+          <Field label="随 APR 自启动">{s.auto_start ? '开启' : '关闭'}</Field>
           <Field label="停止命令">
             {s.stop_command ? (
               <code className="font-mono text-xs">{s.stop_command}</code>

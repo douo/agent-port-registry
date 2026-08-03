@@ -40,6 +40,7 @@ def _row_service(row: Any) -> ServiceRecord:
         stop_command=row["stop_command"],
         health_check=row["health_check"],
         configuration=row["configuration"],
+        auto_start=bool(row["auto_start"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -100,6 +101,7 @@ class Repository:
         stop_command: str | None = None,
         health_check: str | None = None,
         configuration: str | None = None,
+        auto_start: bool = False,
         project_origin: str | None = None,
         registered_by_agent: str | None = None,
         conn: Any = None,
@@ -112,9 +114,9 @@ class Repository:
                 id, device_id, project_id, project_key, service_key, instance_key,
                 registered_by_agent, project_origin, name, description,
                 code_path, working_directory, start_command, stop_command,
-                health_check, configuration,
+                health_check, configuration, auto_start,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             service_id,
@@ -133,6 +135,7 @@ class Repository:
             stop_command,
             health_check,
             configuration,
+            int(auto_start),
             now,
             now,
         )
@@ -178,6 +181,7 @@ class Repository:
         stop_command: str | None = None,
         health_check: str | None = None,
         configuration: str | None = None,
+        auto_start: bool | None = None,
         project_origin: str | None = None,
         registered_by_agent: str | None = None,
         conn: Any = None,
@@ -207,6 +211,8 @@ class Repository:
             fields["health_check"] = health_check
         if configuration is not None:
             fields["configuration"] = configuration
+        if auto_start is not None:
+            fields["auto_start"] = int(auto_start)
         if project_origin is not None:
             fields["project_origin"] = project_origin
         if registered_by_agent is not None:

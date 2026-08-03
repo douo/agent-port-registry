@@ -43,6 +43,17 @@ class Database:
         with self._lock:
             schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
             self._conn.executescript(schema_sql)
+            # CREATE TABLE IF NOT EXISTS does not add columns to an existing
+            # development database. Keep this additive sync next to the single
+            # current schema instead of introducing a migration history.
+            service_columns = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(services)")
+            }
+            if "auto_start" not in service_columns:
+                self._conn.execute(
+                    "ALTER TABLE services ADD COLUMN auto_start "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:

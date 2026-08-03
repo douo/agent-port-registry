@@ -63,6 +63,9 @@ def register(app: typer.Typer) -> None:
         stop_command: Annotated[Optional[str], typer.Option("--stop-command")] = None,
         health_check: Annotated[Optional[str], typer.Option("--health-check")] = None,
         configuration: Annotated[Optional[str], typer.Option("--configuration")] = None,
+        auto_start: Annotated[
+            bool, typer.Option("--auto-start/--no-auto-start")
+        ] = False,
         project_origin: Annotated[Optional[str], typer.Option("--project-origin")] = None,
         agent: Annotated[Optional[str], typer.Option("--agent")] = None,
         project: Annotated[
@@ -87,6 +90,7 @@ def register(app: typer.Typer) -> None:
                 "stop_command": stop_command,
                 "health_check": health_check,
                 "configuration": configuration,
+                "auto_start": auto_start,
                 "project_origin": project_origin,
             },
         }
@@ -135,6 +139,9 @@ def register(app: typer.Typer) -> None:
         stop_command: Annotated[Optional[str], typer.Option("--stop-command")] = None,
         health_check: Annotated[Optional[str], typer.Option("--health-check")] = None,
         configuration: Annotated[Optional[str], typer.Option("--configuration")] = None,
+        auto_start: Annotated[
+            Optional[bool], typer.Option("--auto-start/--no-auto-start")
+        ] = None,
         project_origin: Annotated[Optional[str], typer.Option("--project-origin")] = None,
     ) -> None:
         """Update service index metadata (does not change ports)."""
@@ -150,6 +157,7 @@ def register(app: typer.Typer) -> None:
                 "stop_command": stop_command,
                 "health_check": health_check,
                 "configuration": configuration,
+                "auto_start": auto_start,
                 "project_origin": project_origin,
             }.items()
             if v is not None

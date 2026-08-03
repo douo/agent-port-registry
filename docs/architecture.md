@@ -13,6 +13,10 @@
 
 日常启动
 Agent/用户 ──默认启动命令──> 服务（不访问 APR）
+
+可选自启动
+本地 APR ──检查托管 PID + 已分配 TCP Listener──> 本地服务状态
+本地 APR ──仅在未运行时执行 start_command──> 本地服务
 ```
 
 ## 2. 组件
@@ -44,7 +48,8 @@ Agent/用户 ──默认启动命令──> 服务（不访问 APR）
 ```
 
 `registered_by_agent` 只表示最近登记者。项目来源、路径、命令、健康检查和配置位置
-属于服务元数据。
+属于服务元数据。`auto_start` 是默认关闭的本地启动策略；它不授予主节点修改或自动
+启动从节点服务的权限。
 
 ### Allocation 与 Claim
 
@@ -56,6 +61,9 @@ Agent/用户 ──默认启动命令──> 服务（不访问 APR）
 ### Process 与 Forward
 
 - ManagedProcess 保存受 APR 启动的进程、日志和运行态。
+- 服务运行观测不单独持久化：APR 将仍存活的 ManagedProcess 与当前已分配 TCP
+  端口的 Listener 合并为 `runtime`。没有 ManagedProcess 但存在 Listener 时，来源
+  标记为 `external`；APR 不接管其停止和日志。
 - PortForward 只保存在主节点，保存本机端口、目标节点/远端端口、PID 与 AutoSSH
   状态。目标节点是路由引用，不是转发所有者。
 - 活动态唯一约束覆盖 `starting`、`active`、`reconnecting`，防止同一本机端口重复转发。
@@ -119,6 +127,10 @@ APR 不保存、不创建也不停止任何主节点转发。
 - API 与 Web UI 默认只绑定本机回环；没有鉴权时禁止暴露到外网卡。
 - Unix socket、数据和状态目录使用用户私有权限。
 - 进程管理默认关闭，因为 start command 可执行任意受信命令。
+- 服务级自启动复用进程管理开关；关闭进程管理时即使 `auto_start=true` 也只跳过并
+  记录结果，不执行命令。
+- 无已分配 TCP 端口时，APR 无法排除外部进程已运行，自启动必须以 `unknown` 跳过；
+  用户显式启动不受此限制。
 - SSH 使用 argv，不经本地 shell；Host 和显式字段均校验。
 - 删除、释放和停止是显式操作。
 - 任何远端数据库、配置、端口或程序变更都要求用户明确授权该具体节点；“删除遗留

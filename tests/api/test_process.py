@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -13,6 +14,8 @@ from apr.api.app import create_app
 from apr.allocator.pool import PortPool
 from apr.config import default_config
 from apr.domain.errors import AprError
+from apr.domain.models import EnsureRequest
+from apr.listener.probe import ListenerInfo
 from apr.service.ensure import EnsureService
 from apr.service.process import render_command
 from apr.store.db import Database
@@ -142,6 +145,112 @@ def test_start_stop_logs_roundtrip(client_pm) -> None:
     no_run = client.post(f"/v1/services/{sid}/stop")
     assert no_run.status_code == 409
     assert no_run.json()["error"]["code"] == "PROCESS_NOT_RUNNING"
+
+
+def test_external_listener_is_observed_and_blocks_duplicate_start(client_pm) -> None:
+    client, _cfg = client_pm
+    created = _ensure(client, key="external-svc")
+    sid = created["service_id"]
+    port = created["ports"]["http"]
+
+    observed = {port: ListenerInfo(port=port, pid=4242, command="manual-server")}
+    with patch("apr.service.process.probe_listeners", return_value=observed):
+        detail = client.get(f"/v1/services/{sid}").json()
+        assert detail["runtime"]["state"] == "running"
+        assert detail["runtime"]["source"] == "external"
+        assert detail["runtime"]["listeners"][0]["port"] == port
+        assert detail["process"] is None
+
+        start = client.post(f"/v1/services/{sid}/start")
+        assert start.status_code == 409
+        assert start.json()["error"]["code"] == "PROCESS_ALREADY_RUNNING"
+        assert "outside APR" in start.json()["error"]["message"]
+
+        assert client.patch(
+            f"/v1/services/{sid}", json={"auto_start": True}
+        ).status_code == 200
+        manager = client.app.state.apr["process_manager"]
+        result = manager.auto_start_configured()
+        assert result[0]["status"] == "skipped"
+        assert result[0]["reason"] == "PROCESS_ALREADY_RUNNING"
+        assert manager.get_latest(sid) is None
+
+
+def test_lifespan_auto_starts_configured_service(tmp_path: Path) -> None:
+    db_path = tmp_path / "apr.db"
+    db = Database(db_path)
+    repo = Repository(db)
+    pool = PortPool(start=31200, end=31220, excluded=set())
+    ensure = EnsureService(repo, port_pool=pool)
+    cfg = default_config()
+    cfg.data_dir = tmp_path
+    cfg.db_path = db_path
+    cfg.state_dir = tmp_path / "state"
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    cfg.use_unix_socket = False
+    cfg.process_management_enabled = True
+    cfg.process_stop_timeout_seconds = 2
+
+    created = ensure.ensure(
+        EnsureRequest.model_validate(
+            {
+                "agent": {"type": "test"},
+                "service": {
+                    "key": "boot-svc",
+                    "project_id": "pm",
+                    "name": "boot-svc",
+                    "start_command": (
+                        f'{sys.executable} -c "import time; time.sleep(30)"'
+                    ),
+                    "auto_start": True,
+                },
+                "resources": [{"name": "http", "type": "single"}],
+            }
+        )
+    )
+    app = create_app(
+        state={
+            "config": cfg,
+            "db": db,
+            "repo": repo,
+            "ensure": ensure,
+            "db_path": str(db_path),
+        }
+    )
+
+    with TestClient(app) as client:
+        status = client.get(f"/v1/services/{created.service_id}/process").json()
+        assert status["process"]["state"] == "running"
+        assert status["runtime"]["source"] == "managed"
+        assert client.post(f"/v1/services/{created.service_id}/stop").status_code == 200
+
+
+def test_auto_start_skips_service_without_observable_tcp_port(client_pm) -> None:
+    client, _cfg = client_pm
+    response = client.post(
+        "/v1/services",
+        json={
+            "service": {
+                "key": "worker",
+                "name": "worker",
+                "start_command": f'{sys.executable} -c "import time; time.sleep(30)"',
+                "auto_start": True,
+            }
+        },
+    )
+    assert response.status_code == 201
+    sid = response.json()["id"]
+
+    manager = client.app.state.apr["process_manager"]
+    result = manager.auto_start_configured()
+    assert result == [
+        {
+            "service_id": sid,
+            "status": "skipped",
+            "reason": "runtime_unobservable",
+        }
+    ]
+    assert manager.get_latest(sid) is None
 
 
 def test_no_start_command(client_pm) -> None:

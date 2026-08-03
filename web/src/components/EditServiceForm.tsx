@@ -32,6 +32,7 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
   const [stopCommand, setStopCommand] = useState(service.stop_command ?? '')
   const [healthCheck, setHealthCheck] = useState(service.health_check ?? '')
   const [configuration, setConfiguration] = useState(service.configuration ?? '')
+  const [autoStart, setAutoStart] = useState(service.auto_start)
   const [projectOrigin, setProjectOrigin] = useState(service.project_origin ?? 'self-built')
 
   const mutation = useMutation({
@@ -50,6 +51,7 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
           stop_command: body.stop_command ?? previous.stop_command,
           health_check: body.health_check ?? previous.health_check,
           configuration: body.configuration ?? previous.configuration,
+          auto_start: body.auto_start ?? previous.auto_start,
           project_origin: body.project_origin ?? previous.project_origin,
         })
       }
@@ -76,6 +78,7 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
     setStopCommand(service.stop_command ?? '')
     setHealthCheck(service.health_check ?? '')
     setConfiguration(service.configuration ?? '')
+    setAutoStart(service.auto_start)
     setProjectOrigin(service.project_origin ?? 'self-built')
     mutation.reset()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,6 +95,7 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
       stop_command: stopCommand.trim() || null,
       health_check: healthCheck.trim() || null,
       configuration: configuration.trim() || null,
+      auto_start: autoStart,
       project_origin: projectOrigin,
     })
   }
@@ -200,6 +204,16 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
             disabled={mutation.isPending}
           />
         </div>
+        <label className="flex items-center gap-3 rounded-lg border border-line-soft bg-raised px-3 py-2 text-sm">
+          <input
+            type="checkbox"
+            checked={autoStart}
+            onChange={(e) => setAutoStart(e.target.checked)}
+            disabled={mutation.isPending}
+            className="h-4 w-4 accent-brand"
+          />
+          <span>随 APR 自启动</span>
+        </label>
 
         {mutation.isError && <FormError error={mutation.error} />}
 

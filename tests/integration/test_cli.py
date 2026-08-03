@@ -126,8 +126,17 @@ def test_cli_ensure_flags(daemon: Path) -> None:
             "http,hmr",
             "--agent",
             "grok-build",
+            "--auto-start",
         ]
     )
     assert r.returncode == 0, r.stderr + r.stdout
     data = json.loads(r.stdout)
     assert set(data["ports"]) == {"http", "hmr"}
+
+    listed = _run(["--data-dir", str(daemon), "list", "--json"])
+    service = next(
+        item
+        for item in json.loads(listed.stdout)["services"]
+        if item["service_key"] == "frontend"
+    )
+    assert service["auto_start"] is True

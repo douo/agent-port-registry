@@ -47,6 +47,17 @@ export interface ManagedProcess {
   alive: boolean
 }
 
+export type RuntimeState = 'running' | 'stopped' | 'unknown'
+export type RuntimeSource = 'managed' | 'external' | 'none'
+
+export interface ServiceRuntime {
+  state: RuntimeState
+  source: RuntimeSource
+  observable: boolean
+  expected_tcp_ports: number[]
+  listeners: Listener[]
+}
+
 export interface ServiceLogs {
   service_id: string
   log_path: string
@@ -98,10 +109,12 @@ export interface Service {
   stop_command: string | null
   health_check: string | null
   configuration: string | null
+  auto_start: boolean
   created_at: string
   updated_at: string
   allocations: Allocation[]
   process?: ManagedProcess | null
+  runtime?: ServiceRuntime | null
 }
 
 export interface Pool {
@@ -170,6 +183,7 @@ export interface ServiceInput {
   stop_command?: string | null
   health_check?: string | null
   configuration?: string | null
+  auto_start?: boolean | null
 }
 
 export interface EnsureRequest {
@@ -204,6 +218,7 @@ export interface ServiceUpdateRequest {
   stop_command?: string | null
   health_check?: string | null
   configuration?: string | null
+  auto_start?: boolean | null
   project_origin?: 'self-built' | 'third-party-open-source' | 'external' | null
 }
 
@@ -446,7 +461,11 @@ export const api = {
     request<ServiceLogs>(`/v1/services/${id}/logs?tail=${tail}`),
 
   serviceProcess: (id: string) =>
-    request<{ service_id: string; process: ManagedProcess | null }>(
+    request<{
+      service_id: string
+      process: ManagedProcess | null
+      runtime: ServiceRuntime
+    }>(
       `/v1/services/${id}/process`,
     ),
 

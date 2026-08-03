@@ -130,10 +130,14 @@ def test_double_release_raises(repo: Repository) -> None:
 def test_update_metadata(repo: Repository) -> None:
     svc = repo.create_service(_ident(), name="Old")
     updated = repo.update_service_metadata(
-        svc.id, description="new desc", start_command="run {{ports.http}}"
+        svc.id,
+        description="new desc",
+        start_command="run {{ports.http}}",
+        auto_start=True,
     )
     assert updated.description == "new desc"
     assert updated.start_command == "run {{ports.http}}"
+    assert updated.auto_start is True
     assert updated.name == "Old"
 
 

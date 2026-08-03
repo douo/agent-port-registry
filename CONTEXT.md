@@ -17,6 +17,12 @@ APR 前必须先阅读本文档。
   快照用于展示，不能写回从节点，也不能并入主节点本地服务注册表。
 - **运行控制（Runtime Control）**：用户在主节点明确触发后，经 SSH 对从节点已有
   服务执行 start、stop、status 或 logs。它不包括修改服务登记。
+- **运行观测（Runtime Observation）**：APR 根据本机托管 PID 与服务已分配 TCP
+  端口的 Listener 推导当前状态。外部 Listener 可以证明服务已运行或端口已占用，
+  但不会被 APR 接管为托管进程。
+- **服务自启动（Service Auto-start）**：本地服务可设置 `auto_start`。本机 APR 启动
+  时，在进程管理已开启且没有托管进程或外部 Listener 的前提下执行其
+  `start_command`。
 - **本机转发（Local Forward）**：由主节点拥有并运行的 SSH `-L`/AutoSSH 进程。
   从节点和远端端口只是转发目标，不拥有转发记录。
 - **Agent**：首次配置或重配置服务的执行者。Agent 必须在目标节点权限范围内调用
@@ -46,3 +52,5 @@ APR 前必须先阅读本文档。
    端口迁移都需要用户对该节点的明确授权。
 8. 新服务首次配置时，Agent 在目标节点向该节点本地 APR ensure；后续普通启动只用
    已持久化端口，不重复 ensure。
+9. 外部启动的服务只可观测，不可由 APR stop、读取进程日志或认领为 ManagedProcess。
+10. 服务自启动只作用于当前节点本地服务，不会从主节点替从节点执行自启动扫描。

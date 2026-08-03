@@ -25,6 +25,7 @@ from apr.config import Config
 from apr.domain.errors import AprError, ErrorCode
 from apr.domain.ids import new_process_id
 from apr.domain.models import AllocationState
+from apr.listener.probe import ListenerInfo, probe_listeners
 from apr.store.repository import Repository
 
 # Matches the frontend preview in ServiceDetail.tsx:renderCommand.
@@ -80,6 +81,16 @@ def port_map_for_service(repo: Repository, service_id: str) -> dict[str, int]:
                 ports[f"{res_name}.start"] = items_sorted[0].port
                 ports[f"{res_name}.end"] = items_sorted[-1].port
     return ports
+
+
+def tcp_ports_for_service(repo: Repository, service_id: str) -> list[int]:
+    """Return reserved TCP ports that can identify a local service at runtime."""
+    ports: set[int] = set()
+    for alloc in repo.list_allocations_for_service(service_id):
+        if alloc.state != AllocationState.RESERVED:
+            continue
+        ports.update(p.port for p in alloc.ports if p.transport == "tcp")
+    return sorted(ports)
 
 
 def resolve_user_shell() -> str:
@@ -264,6 +275,52 @@ class ProcessManager:
         )
         return None
 
+    def runtime_status(
+        self,
+        service_id: str,
+        *,
+        listeners: dict[int, ListenerInfo] | None = None,
+    ) -> dict[str, Any]:
+        """Observe runtime truth without taking ownership of external processes.
+
+        A live managed PID is authoritative for an APR-spawned process. Otherwise,
+        a listener on any reserved TCP port means the service is externally
+        running (or at minimum its port is occupied), which is enough to prevent
+        a duplicate start. Services without observable TCP ports remain unknown.
+        """
+        live = self.reconcile(service_id)
+        expected_ports = tcp_ports_for_service(self.repo, service_id)
+        current = listeners if listeners is not None else probe_listeners()
+        observed = [current[p] for p in expected_ports if p in current]
+
+        if live is not None:
+            state = "running"
+            source = "managed"
+        elif observed:
+            state = "running"
+            source = "external"
+        elif expected_ports:
+            state = "stopped"
+            source = "none"
+        else:
+            state = "unknown"
+            source = "none"
+
+        return {
+            "state": state,
+            "source": source,
+            "observable": bool(expected_ports),
+            "expected_tcp_ports": expected_ports,
+            "listeners": [
+                {
+                    "port": item.port,
+                    "pid": item.pid,
+                    "command": item.command,
+                }
+                for item in observed
+            ],
+        }
+
     def _try_wait_exit(self, pid: int | None) -> int | None:
         if pid is None:
             return None
@@ -363,13 +420,22 @@ class ProcessManager:
                 f"Service {service_id} has no start_command; set one before starting.",
             )
 
-        # Reconcile orphans from a previous daemon lifetime / immediate crash.
-        existing = self.reconcile(service_id)
-        if existing is not None:
+        # Reconcile old rows and also guard against a service started outside APR.
+        # Any occupied assigned TCP port is sufficient to avoid a duplicate spawn.
+        runtime = self.runtime_status(service_id)
+        if runtime["source"] == "managed":
+            existing = self.get_live(service_id)
             raise AprError(
                 ErrorCode.PROCESS_ALREADY_RUNNING,
-                f"Service already has a managed process (pid={existing.pid}, "
-                f"id={existing.id}). Stop it first.",
+                f"Service already has a managed process (pid={existing.pid if existing else None}, "
+                f"id={existing.id if existing else None}). Stop it first.",
+            )
+        if runtime["source"] == "external":
+            occupied = ", ".join(str(item["port"]) for item in runtime["listeners"])
+            raise AprError(
+                ErrorCode.PROCESS_ALREADY_RUNNING,
+                f"Service is already active outside APR on assigned TCP port(s): "
+                f"{occupied}. APR will observe it but will not take ownership.",
             )
 
         ports = port_map_for_service(self.repo, service_id)
@@ -475,6 +541,80 @@ class ProcessManager:
             pid=proc.pid,
             started=True,
         )
+
+    def auto_start_configured(self) -> list[dict[str, Any]]:
+        """Start configured local services once, isolating failures per service."""
+        services = [
+            svc
+            for svc in self.repo.list_services(device_id="NODE_LOCAL")
+            if svc.auto_start
+        ]
+        results: list[dict[str, Any]] = []
+        for svc in services:
+            if not self.config.process_management_enabled:
+                results.append(
+                    {
+                        "service_id": svc.id,
+                        "status": "skipped",
+                        "reason": "process_management_disabled",
+                    }
+                )
+                continue
+            if not svc.start_command or not svc.start_command.strip():
+                results.append(
+                    {
+                        "service_id": svc.id,
+                        "status": "skipped",
+                        "reason": "no_start_command",
+                    }
+                )
+                continue
+            runtime = self.runtime_status(svc.id)
+            if runtime["state"] == "unknown":
+                results.append(
+                    {
+                        "service_id": svc.id,
+                        "status": "skipped",
+                        "reason": "runtime_unobservable",
+                    }
+                )
+                continue
+            try:
+                proc = self.start(svc.id)
+            except AprError as exc:
+                results.append(
+                    {
+                        "service_id": svc.id,
+                        "status": (
+                            "skipped"
+                            if exc.code == ErrorCode.PROCESS_ALREADY_RUNNING
+                            else "failed"
+                        ),
+                        "reason": str(exc.code),
+                        "error": exc.message,
+                    }
+                )
+                continue
+            except Exception as exc:
+                results.append(
+                    {
+                        "service_id": svc.id,
+                        "status": "failed",
+                        "reason": "INTERNAL_ERROR",
+                        "error": str(exc),
+                    }
+                )
+                continue
+            results.append(
+                {
+                    "service_id": svc.id,
+                    "status": "started",
+                    "process_id": proc.id,
+                    "pid": proc.pid,
+                    "state": proc.state,
+                }
+            )
+        return results
 
     def _wait_startup(self, proc: subprocess.Popen) -> int | None:
         """Return exit code if the process dies within the startup probe window."""

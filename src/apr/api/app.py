@@ -20,7 +20,7 @@ from apr.api.routes import api_routes
 from apr.domain.errors import AprError
 from apr.webui import webui_routes
 
-_log = logging.getLogger("apr.nodes")
+_log = logging.getLogger("apr.runtime")
 
 
 async def healthz(_request: Request) -> JSONResponse:
@@ -64,6 +64,42 @@ async def _node_refresh_loop(apr_state: dict[str, Any]) -> None:
         await asyncio.sleep(30)
 
 
+async def _auto_start_services(apr_state: dict[str, Any]) -> None:
+    """Run the one-shot local service auto-start pass during APR startup."""
+    repo = apr_state.get("repo")
+    cfg = apr_state.get("config")
+    if repo is None or cfg is None:
+        return
+
+    from apr.service.process import ProcessManager
+
+    manager = apr_state.get("process_manager")
+    if manager is None:
+        manager = ProcessManager(repo, cfg)
+        apr_state["process_manager"] = manager
+    try:
+        results = await asyncio.to_thread(manager.auto_start_configured)
+    except Exception:
+        _log.exception("service auto-start pass failed")
+        return
+
+    apr_state["auto_start_results"] = results
+    for result in results:
+        log = _log.info if result["status"] in {"started", "skipped"} else _log.error
+        log("service auto-start: %s", result)
+
+
+async def _auto_start_once(apr_state: dict[str, Any]) -> None:
+    """Share one auto-start pass across UDS and TCP server lifespans."""
+    task = apr_state.get("auto_start_task")
+    if task is None:
+        task = asyncio.create_task(
+            _auto_start_services(apr_state), name="apr-service-auto-start"
+        )
+        apr_state["auto_start_task"] = task
+    await asyncio.shield(task)
+
+
 def create_app(*, state: dict[str, Any] | None = None) -> Starlette:
     """Create the APR Registry ASGI app."""
     apr_state: dict[str, Any] = dict(state or {})
@@ -90,6 +126,7 @@ def create_app(*, state: dict[str, Any] | None = None) -> Starlette:
                     os.chmod(sock, 0o600)
                 except OSError:
                     pass
+        await _auto_start_once(apr_state)
         refresh_task = asyncio.create_task(
             _node_refresh_loop(apr_state), name="apr-node-refresh"
         )
