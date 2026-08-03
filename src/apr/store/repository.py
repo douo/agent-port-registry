@@ -368,6 +368,26 @@ class Repository:
             )
         return {int(r["port"]) for r in rows}
 
+    def reserved_forward_ports(
+        self,
+        *,
+        exclude_forward_id: str | None = None,
+        conn: Any = None,
+    ) -> set[int]:
+        query = (
+            "SELECT local_port FROM port_forwards "
+            "WHERE (state != 'stopped' OR auto_start = 1)"
+        )
+        params: tuple[Any, ...] = ()
+        if exclude_forward_id is not None:
+            query += " AND id != ?"
+            params = (exclude_forward_id,)
+        if conn is not None:
+            rows = conn.execute(query, params).fetchall()
+        else:
+            rows = self.db.fetchall(query, params)
+        return {int(r["local_port"]) for r in rows}
+
     def create_allocation_with_ports(
         self,
         conn: Any,

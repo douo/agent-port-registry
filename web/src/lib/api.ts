@@ -293,6 +293,7 @@ export interface PortForward {
   state: ForwardState
   last_error: string | null
   auto_reconnect: boolean
+  auto_start: boolean
   created_at: string
   started_at: string | null
   stopped_at: string | null
@@ -516,6 +517,7 @@ export const api = {
       remote_host?: string
       label?: string
       auto_reconnect?: boolean
+      auto_start?: boolean
     },
   ) =>
     request<PortForward>(`/v1/nodes/${nodeId}/forwards`, {
@@ -523,9 +525,16 @@ export const api = {
       body: JSON.stringify(body),
     }),
   stopForward: (id: string) =>
-    request<PortForward>(`/v1/forwards/${id}`, { method: 'DELETE' }),
+    request<PortForward>(`/v1/forwards/${id}/stop`, { method: 'POST' }),
   startForward: (id: string) =>
     request<PortForward>(`/v1/forwards/${id}/start`, { method: 'POST' }),
+  patchForward: (id: string, body: { auto_start: boolean }) =>
+    request<PortForward>(`/v1/forwards/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteForward: (id: string) =>
+    request<{ id: string; deleted: boolean }>(`/v1/forwards/${id}`, { method: 'DELETE' }),
 }
 
 /* ------------------------------------------------------------- query utils */

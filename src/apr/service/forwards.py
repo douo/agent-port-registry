@@ -45,6 +45,7 @@ class ForwardRecord:
     state: str
     last_error: str | None
     auto_reconnect: bool
+    auto_start: bool
     created_at: str
     started_at: str | None
     stopped_at: str | None
@@ -64,6 +65,7 @@ class ForwardRecord:
             "state": self.state,
             "last_error": self.last_error,
             "auto_reconnect": self.auto_reconnect,
+            "auto_start": self.auto_start,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "stopped_at": self.stopped_at,
@@ -84,6 +86,7 @@ def _row_forward(row: Any) -> ForwardRecord:
         state=row["state"],
         last_error=row["last_error"],
         auto_reconnect=bool(row["auto_reconnect"]),
+        auto_start=bool(row["auto_start"]),
         created_at=row["created_at"],
         started_at=row["started_at"],
         stopped_at=row["stopped_at"],
@@ -162,10 +165,11 @@ class ForwardManager:
     def reconcile(self, forward_id: str | None = None) -> None:
         """Reconcile tunnel state without interrupting AutoSSH retries."""
         items = [self.require(forward_id)] if forward_id else self.list_live()
+        items = [item for item in items if item.state in LIVE_FORWARD_STATES]
+        if not items:
+            return
         listening = set(probe_listeners().keys())
         for fwd in items:
-            if fwd.state not in LIVE_FORWARD_STATES:
-                continue
             if _pid_alive(fwd.pid) and fwd.local_port in listening:
                 if fwd.state in ("starting", "reconnecting"):
                     self._mark(fwd.id, state="active", clear_error=True)
@@ -194,18 +198,89 @@ class ForwardManager:
                 stopped=True,
             )
 
-    def _busy_local_ports(self) -> set[int]:
+    def maintain_rules(self) -> list[dict[str, Any]]:
+        """Supervise rules desired to run during the current APR process."""
+        results: list[dict[str, Any]] = []
+        for rule in self.list_forwards():
+            if rule.state == "stopped":
+                results.append({"id": rule.id, "status": "stopped"})
+                continue
+            try:
+                if rule.state in LIVE_FORWARD_STATES:
+                    self.reconcile(rule.id)
+                current = self.require(rule.id)
+                if current.state == "failed":
+                    current = self.restart(current.id)
+                    results.append(
+                        {"id": current.id, "status": "restarted", "state": current.state}
+                    )
+                else:
+                    results.append(
+                        {"id": current.id, "status": "running", "state": current.state}
+                    )
+            except AprError as exc:
+                results.append(
+                    {
+                        "id": rule.id,
+                        "status": "failed",
+                        "error": exc.message,
+                    }
+                )
+        return results
+
+    def restore_startup_rules(self) -> list[dict[str, Any]]:
+        """Apply persisted auto-start policy once when APR starts."""
+        results: list[dict[str, Any]] = []
+        for rule in self.list_forwards():
+            try:
+                if rule.state in LIVE_FORWARD_STATES:
+                    self.reconcile(rule.id)
+                current = self.require(rule.id)
+
+                if current.state in LIVE_FORWARD_STATES:
+                    results.append(
+                        {"id": current.id, "status": "running", "state": current.state}
+                    )
+                    continue
+
+                if current.auto_start:
+                    current = self.restart(current.id)
+                    results.append(
+                        {"id": current.id, "status": "started", "state": current.state}
+                    )
+                    continue
+
+                if current.state != "stopped":
+                    current = self._mark(current.id, state="stopped", stopped=True)
+                results.append({"id": current.id, "status": "stopped"})
+            except AprError as exc:
+                results.append(
+                    {
+                        "id": rule.id,
+                        "status": "failed",
+                        "error": exc.message,
+                    }
+                )
+        return results
+
+    def _busy_local_ports(self, *, exclude_forward_id: str | None = None) -> set[int]:
         claimed = self.repo.active_claimed_ports()
+        claimed |= self.repo.reserved_forward_ports(exclude_forward_id=exclude_forward_id)
         listening = set(probe_listeners().keys())
         live_fwd = {
             f.local_port
             for f in self.list_forwards()
-            if f.state in LIVE_FORWARD_STATES
+            if f.state in LIVE_FORWARD_STATES and f.id != exclude_forward_id
         }
         return claimed | listening | live_fwd
 
-    def pick_local_port(self, preferred: int | None = None) -> int:
-        busy = self._busy_local_ports()
+    def pick_local_port(
+        self,
+        preferred: int | None = None,
+        *,
+        exclude_forward_id: str | None = None,
+    ) -> int:
+        busy = self._busy_local_ports(exclude_forward_id=exclude_forward_id)
         pool = self.config.port_pool
         if preferred is not None:
             if not (1 <= preferred <= 65535):
@@ -311,6 +386,7 @@ class ForwardManager:
         remote_host: str = "127.0.0.1",
         label: str | None = None,
         auto_reconnect: bool = True,
+        auto_start: bool = True,
         _record_id: str | None = None,
     ) -> ForwardRecord:
         node = self.nodes.require(node_id)
@@ -329,7 +405,7 @@ class ForwardManager:
                 if live and live.state in LIVE_FORWARD_STATES and _pid_alive(live.pid):
                     return live
 
-        chosen = self.pick_local_port(local_port)
+        chosen = self.pick_local_port(local_port, exclude_forward_id=_record_id)
         now = _utcnow()
         fwd_id = _record_id or new_forward_id()
         if _record_id is None:
@@ -337,9 +413,9 @@ class ForwardManager:
                 """
                 INSERT INTO port_forwards (
                     id, node_id, remote_port, remote_host, local_port, label,
-                    pid, state, last_error, auto_reconnect,
+                    pid, state, last_error, auto_reconnect, auto_start,
                     created_at, started_at, stopped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'starting', NULL, ?, ?, NULL, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'starting', NULL, ?, ?, ?, NULL, NULL)
                 """,
                 (
                     fwd_id,
@@ -349,6 +425,7 @@ class ForwardManager:
                     chosen,
                     label,
                     1 if auto_reconnect else 0,
+                    1 if auto_start else 0,
                     now,
                 ),
             )
@@ -431,6 +508,30 @@ class ForwardManager:
             stopped=True,
             clear_error=True,
         )
+
+    def remove(self, forward_id: str) -> dict[str, Any]:
+        """Stop an owned process and delete its persistent forwarding rule."""
+        fwd = self.require(forward_id)
+        if _pid_alive(fwd.pid):
+            self._kill_pid(fwd.pid)
+        self.repo.db.execute("DELETE FROM port_forwards WHERE id = ?", (forward_id,))
+        return {"id": forward_id, "deleted": True}
+
+    def update_auto_start(self, forward_id: str, auto_start: bool) -> ForwardRecord:
+        """Change restart policy without changing the rule's current runtime state."""
+        fwd = self.require(forward_id)
+        if auto_start and not fwd.auto_start:
+            reserved = self.repo.reserved_forward_ports(exclude_forward_id=forward_id)
+            if fwd.local_port in reserved:
+                raise AprError(
+                    ErrorCode.LOCAL_PORT_UNAVAILABLE,
+                    f"Local port {fwd.local_port} is reserved by another rule",
+                )
+        self.repo.db.execute(
+            "UPDATE port_forwards SET auto_start = ? WHERE id = ?",
+            (1 if auto_start else 0, forward_id),
+        )
+        return self.require(forward_id)
 
     def restart(self, forward_id: str) -> ForwardRecord:
         """Restart a stopped/failed forward on its original local port."""

@@ -13,8 +13,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-_T = TypeVar("_T")
-
 from apr import __version__
 from apr.domain.errors import AprError, ErrorCode
 from apr.domain.identity import ServiceIdentity, require_local_device_id
@@ -31,6 +29,8 @@ from apr.service.ensure import EnsureService, check_allocation_ports
 from apr.service.forwards import ForwardManager
 from apr.service.nodes import NodeManager
 from apr.service.process import ProcessManager
+
+_T = TypeVar("_T")
 
 
 def _state(request: Request) -> dict[str, Any]:
@@ -699,9 +699,9 @@ async def delete_node(request: Request) -> JSONResponse:
     mgr = _node_mgr(request)
 
     def _work() -> dict[str, Any]:
-        for fwd in fm.list_live(node_id=node_id):
+        for fwd in fm.list_forwards(node_id=node_id):
             try:
-                fm.stop(fwd.id)
+                fm.remove(fwd.id)
             except AprError:
                 pass
         return mgr.delete(node_id)
@@ -806,6 +806,8 @@ async def create_forward(request: Request) -> JSONResponse:
         raise AprError(ErrorCode.INVALID_REQUEST, "Body must be an object")
     if body.get("remote_port") is None:
         raise AprError(ErrorCode.INVALID_REQUEST, "remote_port is required")
+    if "auto_start" in body and not isinstance(body["auto_start"], bool):
+        raise AprError(ErrorCode.INVALID_REQUEST, "auto_start must be a boolean")
     fm = _forward_mgr(request)
     fwd = await _to_thread(
         fm.start,
@@ -815,6 +817,7 @@ async def create_forward(request: Request) -> JSONResponse:
         remote_host=str(body.get("remote_host") or "127.0.0.1"),
         label=body.get("label"),
         auto_reconnect=bool(body.get("auto_reconnect", True)),
+        auto_start=bool(body.get("auto_start", True)),
     )
     return JSONResponse(fwd.to_dict(), status_code=201)
 
@@ -822,6 +825,30 @@ async def create_forward(request: Request) -> JSONResponse:
 async def stop_forward(request: Request) -> JSONResponse:
     forward_id = request.path_params["forward_id"]
     fwd = await _to_thread(_forward_mgr(request).stop, forward_id)
+    return JSONResponse(fwd.to_dict())
+
+
+async def delete_forward(request: Request) -> JSONResponse:
+    forward_id = request.path_params["forward_id"]
+    result = await _to_thread(_forward_mgr(request).remove, forward_id)
+    return JSONResponse(result)
+
+
+async def patch_forward(request: Request) -> JSONResponse:
+    forward_id = request.path_params["forward_id"]
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise AprError(ErrorCode.INVALID_REQUEST, f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict) or "auto_start" not in body:
+        raise AprError(ErrorCode.INVALID_REQUEST, "auto_start is required")
+    if not isinstance(body["auto_start"], bool):
+        raise AprError(ErrorCode.INVALID_REQUEST, "auto_start must be a boolean")
+    fwd = await _to_thread(
+        _forward_mgr(request).update_auto_start,
+        forward_id,
+        body["auto_start"],
+    )
     return JSONResponse(fwd.to_dict())
 
 
@@ -905,12 +932,18 @@ def api_routes() -> list[Route]:
         # Forwards
         Route("/v1/forwards", list_forwards, methods=["GET"]),
         Route("/v1/forwards/{forward_id}", get_forward, methods=["GET"]),
+        Route("/v1/forwards/{forward_id}", patch_forward, methods=["PATCH"]),
         Route(
             "/v1/forwards/{forward_id}/start",
             start_forward,
             methods=["POST"],
         ),
-        Route("/v1/forwards/{forward_id}", stop_forward, methods=["DELETE"]),
+        Route(
+            "/v1/forwards/{forward_id}/stop",
+            stop_forward,
+            methods=["POST"],
+        ),
+        Route("/v1/forwards/{forward_id}", delete_forward, methods=["DELETE"]),
         Route("/v1/ports/{port}", get_port, methods=["GET"]),
         Route("/v1/allocations/{allocation_id}", get_allocation, methods=["GET"]),
         Route(

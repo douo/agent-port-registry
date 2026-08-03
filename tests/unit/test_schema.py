@@ -65,7 +65,11 @@ def test_fresh_database_has_current_schema(tmp_path: Path) -> None:
         service_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(services)")
         }
+        forward_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(port_forwards)")
+        }
         assert "auto_start" in service_columns
+        assert "auto_start" in forward_columns
     db.close()
 
 
@@ -87,6 +91,26 @@ def test_existing_database_gets_additive_auto_start_column(tmp_path: Path) -> No
         INSERT INTO services VALUES (
             'SVC_OLD', 'NODE_LOCAL', 'p', 's', 'default', 'Old', 'now', 'now'
         );
+        CREATE TABLE port_forwards (
+            id TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            remote_port INTEGER NOT NULL,
+            remote_host TEXT NOT NULL DEFAULT '127.0.0.1',
+            local_port INTEGER NOT NULL,
+            label TEXT NULL,
+            pid INTEGER NULL,
+            state TEXT NOT NULL,
+            last_error TEXT NULL,
+            auto_reconnect INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            started_at TEXT NULL,
+            stopped_at TEXT NULL
+        );
+        INSERT INTO port_forwards (
+            id, node_id, remote_port, local_port, state, created_at
+        ) VALUES
+            ('FWD_LIVE', 'NODE_OLD', 8000, 30000, 'active', 'now'),
+            ('FWD_STOPPED', 'NODE_OLD', 8001, 30001, 'stopped', 'now');
         """
     )
     conn.close()
@@ -99,6 +123,12 @@ def test_existing_database_gets_additive_auto_start_column(tmp_path: Path) -> No
     assert "auto_start" in columns
     assert db.fetchone(
         "SELECT auto_start FROM services WHERE id = 'SVC_OLD'"
+    )["auto_start"] == 0
+    assert db.fetchone(
+        "SELECT auto_start FROM port_forwards WHERE id = 'FWD_LIVE'"
+    )["auto_start"] == 1
+    assert db.fetchone(
+        "SELECT auto_start FROM port_forwards WHERE id = 'FWD_STOPPED'"
     )["auto_start"] == 0
     db.close()
 

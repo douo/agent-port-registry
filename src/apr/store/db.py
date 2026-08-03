@@ -54,6 +54,19 @@ class Database:
                     "ALTER TABLE services ADD COLUMN auto_start "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
+            forward_columns = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(port_forwards)")
+            }
+            if "auto_start" not in forward_columns:
+                self._conn.execute(
+                    "ALTER TABLE port_forwards ADD COLUMN auto_start "
+                    "INTEGER NOT NULL DEFAULT 1"
+                )
+                # Preserve the old intent: stopped legacy rules were disabled,
+                # while every other rule was restored after an APR restart.
+                self._conn.execute(
+                    "UPDATE port_forwards SET auto_start = 0 WHERE state = 'stopped'"
+                )
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:

@@ -28,7 +28,7 @@ Agent/用户 ──默认启动命令──> 服务（不访问 APR）
   本机转发记录。
 - Web UI：复用同一 API 的服务、端口、节点、控制台和转发界面。
 - SSH control plane：使用 SSH config 别名访问节点。
-- AutoSSH manager：建立并监测节点到本机的端口转发。
+- AutoSSH supervisor：持久化、建立并恢复节点到本机的端口转发规则。
 
 ## 3. 数据模型
 
@@ -65,8 +65,13 @@ Agent/用户 ──默认启动命令──> 服务（不访问 APR）
   端口的 Listener 合并为 `runtime`。没有 ManagedProcess 但存在 Listener 时，来源
   标记为 `external`；APR 不接管其停止和日志。
 - PortForward 只保存在主节点，保存本机端口、目标节点/远端端口、PID 与 AutoSSH
-  状态。目标节点是路由引用，不是转发所有者。
+  状态。`auto_start` 是独立的 APR 启动策略；目标节点是路由引用，不是转发所有者。
+- `start`/`stop` 只改变当前运行状态，不修改 `auto_start`。APR 启动时拉起开启
+  `auto_start` 的规则；后台监督恢复当前非 `stopped` 但父进程退出的规则，因此手动
+  启动且关闭自启动的规则在本次 APR 运行期间仍受监督。显式删除才移除规则。
 - 活动态唯一约束覆盖 `starting`、`active`、`reconnecting`，防止同一本机端口重复转发。
+- 非停止或开启自启动的规则，其本机端口参与服务分配避让；已停止且关闭自启动的规则
+  释放端口预留。
 
 ## 4. Ensure 事务
 
@@ -118,9 +123,16 @@ ssh_config_managed=false -> ssh [-p port] [-i key] [user@]host -- ...
 
 AutoSSH 连接断开时父进程通常仍存活。此时 APR 标记 `reconnecting`，不误杀父进程；
 恢复监听后重新标记 `active`。只有父进程退出或确定启动失败才标记 `failed`。
+Supervisor 会按固定周期在原本机端口恢复当前应运行的 `failed` 规则。它只根据 AutoSSH 父进程和
+本机监听判断 SSH 主机是否可达，不连接或探测转发的目标服务端口；目标服务仍由用户
+或从节点本地 APR 独立管理。
 
 转发进程和本机监听端口全部属于主节点。节点详情可以派生显示“本机映射”，但从节点
 APR 不保存、不创建也不停止任何主节点转发。
+
+`forward-only` 只表示一个可作为 SSH 转发目标的主机，不代表该主机运行 APR，也不
+授予服务查询或运行控制能力。远程服务管理只适用于运行自身 APR 的 `remote` 从节点，
+并继续遵守主从权限矩阵。
 
 ## 7. 安全
 

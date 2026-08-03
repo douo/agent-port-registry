@@ -9,7 +9,7 @@ from starlette.testclient import TestClient
 
 from apr.api.app import create_app
 from apr.allocator.pool import PortPool
-from apr.config import Config, PortPoolConfig, default_config
+from apr.config import default_config
 from apr.service.ensure import EnsureService
 from apr.store.db import Database
 from apr.store.repository import Repository
@@ -68,6 +68,43 @@ def test_ac001_single_port(client: TestClient) -> None:
     assert "http" in data["ports"]
     assert 30000 <= data["ports"]["http"] <= 30100
     assert data["availability"]["http"]["state"] == "free"
+
+
+def test_service_allocation_avoids_persistent_forward_rule(client: TestClient) -> None:
+    node = client.post(
+        "/v1/nodes",
+        json={"name": "forward-target", "ssh_host": "forward-target"},
+    ).json()
+    repo = client.app.state.apr["repo"]
+    repo.db.execute(
+        """
+        INSERT INTO port_forwards (
+            id, node_id, remote_port, remote_host, local_port, label,
+            pid, state, last_error, auto_reconnect, auto_start,
+            created_at, started_at, stopped_at
+        ) VALUES (
+            'FWD_RESERVED', ?, 8080, '127.0.0.1', 30000, 'reserved rule',
+            NULL, 'stopped', NULL, 1, 1,
+            '2026-08-03T00:00:00Z', NULL, '2026-08-03T00:00:01Z'
+        )
+        """,
+        (node["id"],),
+    )
+
+    body = _ensure_body(
+        resources=[
+            {
+                "name": "http",
+                "type": "single",
+                "preferred_port": 30000,
+                "strict_preferred": True,
+            }
+        ]
+    )
+    response = client.post("/v1/allocations/ensure", json=body)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PREFERRED_PORT_UNAVAILABLE"
 
 
 def test_ac002_idempotent(client: TestClient) -> None:
@@ -193,7 +230,6 @@ def test_ac016_spec_mismatch(client: TestClient) -> None:
 
 def test_ac017_release_and_reallocate(client: TestClient) -> None:
     data = client.post("/v1/allocations/ensure", json=_ensure_body()).json()
-    port = data["ports"]["http"]
     alloc_id = data["allocation_id"]
     rel = client.post(
         f"/v1/allocations/{alloc_id}/release",

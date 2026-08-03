@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS port_forwards (
     state TEXT NOT NULL DEFAULT 'starting',
     last_error TEXT NULL,
     auto_reconnect INTEGER NOT NULL DEFAULT 1,
+    auto_start INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     started_at TEXT NULL,
     stopped_at TEXT NULL,

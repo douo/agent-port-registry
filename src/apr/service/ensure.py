@@ -128,6 +128,8 @@ class EnsureService:
                 device_id=identity.device_id,
                 conn=conn,
             )
+            if is_local:
+                claimed |= self.repo.reserved_forward_ports(conn=conn)
             listening = set(listeners.keys())
 
             try:
