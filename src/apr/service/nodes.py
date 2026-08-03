@@ -40,6 +40,7 @@ class NodeRecord:
     ssh_user: str | None
     ssh_port: int | None
     identity_file: str | None
+    ssh_config_managed: bool
     apr_command: str
     enabled: bool
     refresh_interval_seconds: int
@@ -57,6 +58,7 @@ class NodeRecord:
             "ssh_user": self.ssh_user,
             "ssh_port": self.ssh_port,
             "identity_file": self.identity_file,
+            "ssh_config_managed": self.ssh_config_managed,
             "apr_command": self.apr_command,
             "enabled": self.enabled,
             "refresh_interval_seconds": self.refresh_interval_seconds,
@@ -79,6 +81,7 @@ def _row_node(row: Any) -> NodeRecord:
         ssh_user=row["ssh_user"],
         ssh_port=row["ssh_port"],
         identity_file=row["identity_file"],
+        ssh_config_managed=bool(row["ssh_config_managed"]),
         apr_command=row["apr_command"] or "svcctl",
         enabled=bool(row["enabled"]),
         refresh_interval_seconds=int(row["refresh_interval_seconds"] or 30),
@@ -118,6 +121,7 @@ class NodeManager:
         ssh_user: str | None = None,
         ssh_port: int | None = None,
         identity_file: str | None = None,
+        ssh_config_managed: bool = True,
         apr_command: str = "svcctl",
         enabled: bool = True,
         refresh_interval_seconds: int = 30,
@@ -134,8 +138,11 @@ class NodeManager:
         identity = validate_identity_file(identity_file)
         cmd = validate_apr_command(apr_command)
         interval = max(5, min(3600, int(refresh_interval_seconds or 30)))
-        if kind not in ("remote", "local"):
-            raise AprError(ErrorCode.INVALID_REQUEST, "kind must be remote or local")
+        if kind not in ("remote", "local", "forward-only"):
+            raise AprError(
+                ErrorCode.INVALID_REQUEST,
+                "kind must be remote, local, or forward-only",
+            )
 
         now = _utcnow()
         node_id = new_node_id()
@@ -144,9 +151,9 @@ class NodeManager:
                 """
                 INSERT INTO nodes (
                     id, name, kind, ssh_host, ssh_user, ssh_port, identity_file,
-                    apr_command, enabled, refresh_interval_seconds,
+                    ssh_config_managed, apr_command, enabled, refresh_interval_seconds,
                     last_seen_at, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
                 """,
                 (
                     node_id,
@@ -156,6 +163,7 @@ class NodeManager:
                     user,
                     port,
                     identity,
+                    1 if ssh_config_managed else 0,
                     cmd,
                     1 if enabled else 0,
                     interval,
@@ -188,6 +196,8 @@ class NodeManager:
             updates["ssh_port"] = validate_ssh_port(fields["ssh_port"])
         if "identity_file" in fields:
             updates["identity_file"] = validate_identity_file(fields["identity_file"])
+        if "ssh_config_managed" in fields:
+            updates["ssh_config_managed"] = 1 if fields["ssh_config_managed"] else 0
         if "apr_command" in fields:
             updates["apr_command"] = validate_apr_command(str(fields["apr_command"] or "svcctl"))
         if "enabled" in fields:
@@ -198,9 +208,21 @@ class NodeManager:
             )
         if "kind" in fields:
             kind = fields["kind"]
-            if kind not in ("remote", "local"):
-                raise AprError(ErrorCode.INVALID_REQUEST, "kind must be remote or local")
+            if kind not in ("remote", "local", "forward-only"):
+                raise AprError(
+                    ErrorCode.INVALID_REQUEST,
+                    "kind must be remote, local, or forward-only",
+                )
             updates["kind"] = kind
+
+        if updates.get("kind") == "forward-only":
+            # A tunnel-only node is not expected to run svcctl. Drop any stale
+            # failed snapshot produced before the node was classified correctly.
+            self.repo.db.execute(
+                "DELETE FROM node_snapshots WHERE node_id = ?", (node_id,)
+            )
+            updates["last_seen_at"] = None
+            updates["last_error"] = None
 
         if not updates:
             return node
@@ -233,6 +255,8 @@ class NodeManager:
                 ErrorCode.INVALID_REQUEST,
                 f"Node {node.id} has no ssh_host",
             )
+        if node.ssh_config_managed:
+            return SshTarget(host=node.ssh_host)
         return SshTarget(
             host=node.ssh_host,
             user=node.ssh_user,
@@ -347,6 +371,8 @@ class NodeManager:
     def refresh(self, node_id: str) -> dict[str, Any]:
         """Pull ``list --json`` over SSH and store snapshot."""
         node = self.require(node_id)
+        if node.kind != "remote":
+            return {"node": node.to_dict(snapshot=None), "snapshot": None}
         t0 = time.monotonic()
         try:
             payload = self.remote_json(node, "list", "--json")
@@ -377,7 +403,7 @@ class NodeManager:
     def refresh_enabled(self) -> list[dict[str, Any]]:
         results = []
         for node in self.list_nodes():
-            if not node.enabled:
+            if not node.enabled or node.kind != "remote":
                 continue
             results.append(self.refresh(node.id))
         return results

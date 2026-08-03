@@ -542,7 +542,7 @@ async def get_overview(request: Request) -> JSONResponse:
                     (
                         repo.db.fetchone(
                             "SELECT COUNT(*) AS c FROM port_forwards"
-                            " WHERE state IN ('starting', 'active')"
+                            " WHERE state IN ('starting', 'active', 'reconnecting')"
                         )
                         or {"c": 0}
                     )["c"]
@@ -626,6 +626,7 @@ async def create_node(request: Request) -> JSONResponse:
         ssh_user=body.get("ssh_user"),
         ssh_port=body.get("ssh_port"),
         identity_file=body.get("identity_file"),
+        ssh_config_managed=bool(body.get("ssh_config_managed", True)),
         apr_command=str(body.get("apr_command") or "svcctl"),
         enabled=bool(body.get("enabled", True)),
         refresh_interval_seconds=int(body.get("refresh_interval_seconds") or 30),
@@ -657,6 +658,7 @@ async def patch_node(request: Request) -> JSONResponse:
             "ssh_user",
             "ssh_port",
             "identity_file",
+            "ssh_config_managed",
             "apr_command",
             "enabled",
             "refresh_interval_seconds",
@@ -702,7 +704,9 @@ async def list_node_services(request: Request) -> JSONResponse:
     mgr = _node_mgr(request)
 
     def _work() -> dict[str, Any]:
-        mgr.require(node_id)
+        node = mgr.require(node_id)
+        if node.kind == "forward-only":
+            return {"services": [], "snapshot": None}
         if live:
             data = mgr.list_services_live(node_id)
             return data if isinstance(data, dict) else {"services": data}
@@ -803,6 +807,12 @@ async def stop_forward(request: Request) -> JSONResponse:
     return JSONResponse(fwd.to_dict())
 
 
+async def start_forward(request: Request) -> JSONResponse:
+    forward_id = request.path_params["forward_id"]
+    fwd = await _to_thread(_forward_mgr(request).restart, forward_id)
+    return JSONResponse(fwd.to_dict(), status_code=201)
+
+
 async def get_forward(request: Request) -> JSONResponse:
     forward_id = request.path_params["forward_id"]
     fm = _forward_mgr(request)
@@ -877,6 +887,11 @@ def api_routes() -> list[Route]:
         # Forwards
         Route("/v1/forwards", list_forwards, methods=["GET"]),
         Route("/v1/forwards/{forward_id}", get_forward, methods=["GET"]),
+        Route(
+            "/v1/forwards/{forward_id}/start",
+            start_forward,
+            methods=["POST"],
+        ),
         Route("/v1/forwards/{forward_id}", stop_forward, methods=["DELETE"]),
         Route("/v1/ports/{port}", get_port, methods=["GET"]),
         Route("/v1/allocations/{allocation_id}", get_allocation, methods=["GET"]),

@@ -1,4 +1,4 @@
-"""Nodes API (v2 phase 5) — SSH control plane, mocked remote."""
+"""Nodes API — SSH control plane, mocked remote."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def test_node_crud(client: TestClient) -> None:
 
     r = client.get("/v1/nodes")
     assert r.status_code == 200
-    assert len(r.json()["nodes"]) == 1
+    assert len(r.json()["nodes"]) == 2
 
     r = client.patch(f"/v1/nodes/{nid}", json={"enabled": False, "ssh_port": 2222})
     assert r.status_code == 200
@@ -79,7 +79,9 @@ def test_node_crud(client: TestClient) -> None:
     r = client.delete(f"/v1/nodes/{nid}")
     assert r.status_code == 200
     assert r.json()["deleted"] is True
-    assert client.get("/v1/nodes").json()["nodes"] == []
+    assert [n["id"] for n in client.get("/v1/nodes").json()["nodes"]] == [
+        "NODE_LOCAL"
+    ]
 
 
 def test_node_rejects_bad_host(client: TestClient) -> None:
@@ -105,8 +107,9 @@ def test_refresh_and_services_snapshot(client: TestClient) -> None:
                 "name": "remote-api",
                 "service_key": "remote-api",
                 "instance_key": "main",
-                "agent_type_key": "human",
-                "agent_project_key": "lab",
+                "device_id": nid,
+                "project_key": "lab",
+                "registered_by_agent": None,
                 "allocations": [
                     {
                         "id": "ALLOC_1",

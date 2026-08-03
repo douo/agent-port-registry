@@ -9,6 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from apr.config import Config
@@ -25,7 +26,7 @@ from apr.service.ssh_util import (
 )
 from apr.store.repository import Repository
 
-LIVE_FORWARD_STATES = frozenset({"starting", "active"})
+LIVE_FORWARD_STATES = frozenset({"starting", "active", "reconnecting"})
 
 
 def _utcnow() -> str:
@@ -159,23 +160,28 @@ class ForwardManager:
         return self.require(forward_id)
 
     def reconcile(self, forward_id: str | None = None) -> None:
-        """Mark dead pids as failed/stopped."""
+        """Reconcile tunnel state without interrupting AutoSSH retries."""
         items = [self.require(forward_id)] if forward_id else self.list_live()
         listening = set(probe_listeners().keys())
         for fwd in items:
             if fwd.state not in LIVE_FORWARD_STATES:
                 continue
             if _pid_alive(fwd.pid) and fwd.local_port in listening:
-                if fwd.state == "starting":
+                if fwd.state in ("starting", "reconnecting"):
                     self._mark(fwd.id, state="active", clear_error=True)
                 continue
             if _pid_alive(fwd.pid) and fwd.local_port not in listening:
-                # Process up but tunnel not bound yet — leave as starting briefly.
-                if fwd.state == "active":
+                if fwd.auto_reconnect:
+                    self._mark(
+                        fwd.id,
+                        state="reconnecting",
+                        last_error="SSH route unavailable; AutoSSH is retrying",
+                    )
+                elif fwd.state == "active":
                     self._mark(
                         fwd.id,
                         state="failed",
-                        last_error="autossh alive but local port not listening",
+                        last_error="SSH process alive but local port is not listening",
                         stopped=True,
                     )
                     self._kill_pid(fwd.pid)
@@ -183,8 +189,8 @@ class ForwardManager:
             # Dead
             self._mark(
                 fwd.id,
-                state="failed" if fwd.state == "starting" else "stopped",
-                last_error="autossh process no longer running",
+                state="failed" if fwd.auto_reconnect or fwd.state == "starting" else "stopped",
+                last_error="forward process no longer running",
                 stopped=True,
             )
 
@@ -220,36 +226,44 @@ class ForwardManager:
             "No free local port available for forwarding",
         )
 
-    def _build_autossh_argv(
+    def _build_forward_argv(
         self,
         node: NodeRecord,
         *,
         local_port: int,
         remote_port: int,
         remote_host: str,
+        auto_reconnect: bool,
     ) -> list[str]:
-        if shutil.which("autossh") is None:
+        executable = "autossh" if auto_reconnect else "ssh"
+        if shutil.which(executable) is None:
             raise AprError(
                 ErrorCode.FORWARD_START_FAILED,
-                "autossh not found on PATH; install autossh or add it to PATH",
+                f"{executable} not found on PATH",
             )
         host = validate_ssh_host(node.ssh_host or "")
-        user = validate_ssh_user(node.ssh_user)
-        port = validate_ssh_port(node.ssh_port)
-        identity = validate_identity_file(node.identity_file)
+        user = None if node.ssh_config_managed else validate_ssh_user(node.ssh_user)
+        port = None if node.ssh_config_managed else validate_ssh_port(node.ssh_port)
+        identity = (
+            None
+            if node.ssh_config_managed
+            else validate_identity_file(node.identity_file)
+        )
         # remote_host is the host as seen FROM the slave (almost always 127.0.0.1).
         rh = remote_host.strip() or "127.0.0.1"
         if rh not in ("127.0.0.1", "localhost", "::1") and not rh.replace(".", "").isdigit():
             # Allow simple hostnames for personal use.
             validate_ssh_host(rh)
 
-        argv = [
-            "autossh",
-            "-M",
-            "0",  # disable autossh monitor port; use ServerAlive instead
+        argv = [executable]
+        if auto_reconnect:
+            argv.extend(["-M", "0"])
+        argv.extend([
             "-N",
             "-o",
             "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
             "-o",
             "ExitOnForwardFailure=yes",
             "-o",
@@ -260,7 +274,7 @@ class ForwardManager:
             "StrictHostKeyChecking=accept-new",
             "-L",
             f"{local_port}:{rh}:{remote_port}",
-        ]
+        ])
         if port is not None:
             argv.extend(["-p", str(port)])
         if identity is not None:
@@ -297,6 +311,7 @@ class ForwardManager:
         remote_host: str = "127.0.0.1",
         label: str | None = None,
         auto_reconnect: bool = True,
+        _record_id: str | None = None,
     ) -> ForwardRecord:
         node = self.nodes.require(node_id)
         if not node.ssh_host:
@@ -316,41 +331,59 @@ class ForwardManager:
 
         chosen = self.pick_local_port(local_port)
         now = _utcnow()
-        fwd_id = new_forward_id()
-        self.repo.db.execute(
-            """
-            INSERT INTO port_forwards (
-                id, node_id, remote_port, remote_host, local_port, label,
-                pid, state, last_error, auto_reconnect, created_at, started_at, stopped_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'starting', NULL, ?, ?, NULL, NULL)
-            """,
-            (
-                fwd_id,
-                node_id,
-                int(remote_port),
-                remote_host or "127.0.0.1",
-                chosen,
-                label,
-                1 if auto_reconnect else 0,
-                now,
-            ),
-        )
+        fwd_id = _record_id or new_forward_id()
+        if _record_id is None:
+            self.repo.db.execute(
+                """
+                INSERT INTO port_forwards (
+                    id, node_id, remote_port, remote_host, local_port, label,
+                    pid, state, last_error, auto_reconnect,
+                    created_at, started_at, stopped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'starting', NULL, ?, ?, NULL, NULL)
+                """,
+                (
+                    fwd_id,
+                    node_id,
+                    int(remote_port),
+                    remote_host or "127.0.0.1",
+                    chosen,
+                    label,
+                    1 if auto_reconnect else 0,
+                    now,
+                ),
+            )
+        else:
+            self.repo.db.execute(
+                """
+                UPDATE port_forwards
+                SET pid = NULL, state = 'starting', last_error = NULL,
+                    auto_reconnect = ?, started_at = NULL, stopped_at = NULL
+                WHERE id = ?
+                """,
+                (1 if auto_reconnect else 0, fwd_id),
+            )
 
-        argv = self._build_autossh_argv(
+        argv = self._build_forward_argv(
             node,
             local_port=chosen,
             remote_port=int(remote_port),
             remote_host=remote_host or "127.0.0.1",
+            auto_reconnect=auto_reconnect,
         )
         env = os.environ.copy()
-        # Do not exit if the first connection attempt is slow.
-        env.setdefault("AUTOSSH_GATETIME", "0")
+        if auto_reconnect:
+            env.setdefault("AUTOSSH_GATETIME", "0")
+        log_dir = Path(self.config.state_dir) / "forward-logs"
+        log_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        log_path = log_dir / f"{fwd_id}.log"
+        log_file = None
         try:
+            log_file = open(log_path, "ab", buffering=0)  # noqa: SIM115
             proc = subprocess.Popen(
                 argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=log_file,
                 env=env,
                 start_new_session=True,
             )
@@ -364,19 +397,20 @@ class ForwardManager:
             raise AprError(
                 ErrorCode.FORWARD_START_FAILED, f"failed to spawn autossh: {exc}"
             ) from exc
+        finally:
+            if log_file is not None:
+                log_file.close()
 
         self._mark(fwd_id, pid=proc.pid, started=True)
 
         # Brief probe: process still up and local port listening.
         time.sleep(0.4)
         if not _pid_alive(proc.pid):
-            err = ""
             try:
-                if proc.stderr:
-                    err = (proc.stderr.read() or b"").decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            detail = (err or "autossh exited immediately").strip()[:500]
+                err = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+            except OSError:
+                err = ""
+            detail = (err or "autossh exited immediately").strip()
             self._mark(fwd_id, state="failed", last_error=detail, stopped=True)
             raise AprError(ErrorCode.FORWARD_START_FAILED, detail)
 
@@ -396,6 +430,25 @@ class ForwardManager:
             last_error=None,
             stopped=True,
             clear_error=True,
+        )
+
+    def restart(self, forward_id: str) -> ForwardRecord:
+        """Restart a stopped/failed forward on its original local port."""
+        fwd = self.require(forward_id)
+        self.reconcile(fwd.id)
+        current = self.require(fwd.id)
+        if current.state in LIVE_FORWARD_STATES and _pid_alive(current.pid):
+            return current
+        if _pid_alive(current.pid):
+            self._kill_pid(current.pid)
+        return self.start(
+            current.node_id,
+            remote_port=current.remote_port,
+            local_port=current.local_port,
+            remote_host=current.remote_host,
+            label=current.label,
+            auto_reconnect=current.auto_reconnect,
+            _record_id=current.id,
         )
 
     def reconcile_all(self) -> list[dict[str, Any]]:

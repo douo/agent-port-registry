@@ -1,4 +1,4 @@
-"""Port forwards API (v2 phase 6) — autossh, heavily mocked."""
+"""Port forwards API — autossh, heavily mocked."""
 
 from __future__ import annotations
 
@@ -102,7 +102,9 @@ def test_create_and_stop_forward(client: TestClient) -> None:
         assert "-M" in argv and "0" in argv
         assert "-N" in argv
         assert "33040:127.0.0.1:20010" in argv
-        assert "tiou@127.0.0.1" in argv
+        # ssh_config_managed is the default: preserve the alias and let
+        # ~/.ssh/config own user/port/identity/route switching.
+        assert argv[-1] == "127.0.0.1"
 
     with patch("apr.service.forwards._pid_alive", return_value=False), patch(
         "apr.service.forwards.os.kill"
