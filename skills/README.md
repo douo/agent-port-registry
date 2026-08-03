@@ -7,14 +7,20 @@
 | `claude-code/SKILL.md` | Claude Code adapter |
 | `grok-build/SKILL.md` | Grok Build adapter |
 
-All adapters call the same CLI:
+All adapters use the same first-configuration API:
 
 ```bash
 svcctl ensure --json -
 ```
 
-Business logic never depends on a specific Agent; only the injected `agent.type`
-(and optional `project_id`) differs.
+The Agent first checks whether the service already has a persisted APR port. It
+calls `ensure` only for first setup, device moves, or explicit reconfiguration,
+then writes the returned port into the service's default startup config. Normal
+restarts use that config directly.
+
+Business identity never depends on a specific Agent. `agent.type` is audit
+metadata. Each APR owns only its node-local registry, so a remote service must
+be ensured on the remote node's own APR, never through the master.
 
 ## Install to Codex global skills (`npx skills`)
 

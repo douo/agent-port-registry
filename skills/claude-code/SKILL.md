@@ -1,26 +1,15 @@
 ---
 name: agent-port-registry
 description: >
-  Claude Code adapter for Agent Port Registry. Before starting any local
-  listening service, call svcctl ensure. Inject agent.type=claude-code.
+  Configure a new or newly onboarded local HTTP/API service with an APR-assigned
+  fixed port and persist it into the default startup configuration. For Claude
+  Code, set agent.type=claude-code. Do not call ensure on every restart.
 ---
 
-# Agent Port Registry (Claude Code)
+# Agent Port Registry for Claude Code
 
-Follow `skills/common/SKILL.md` fully.
-
-## Claude Code-specific
-
-- Always set `"agent": { "type": "claude-code", "project_id": "<project-if-known>" }`.
-- `project_id` is optional.
-- Use stable `service.key` + `instance`.
-
-## Install
-
-```bash
-# Example global skills location (adjust to your Claude Code setup)
-mkdir -p ~/.claude/skills/agent-port-registry
-cp skills/common/SKILL.md ~/.claude/skills/agent-port-registry/SKILL.md
-```
-
-Or install as a project skill under `.claude/skills/` when preferred.
+Follow `../common/SKILL.md` fully and set `"agent": { "type": "claude-code" }`.
+Project belongs in `service.project_id`. Run ensure on the target machine's own
+APR; never allocate or register a slave service through a master APR.
+After first-time ensure, write the returned port into the service's normal
+startup config. Ordinary starts use that persisted value without another ensure.

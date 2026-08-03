@@ -1,66 +1,71 @@
 ---
 name: agent-port-registry
 description: >
-  Use before starting or configuring any local service that listens on one or
-  more TCP or UDP ports. Requests fixed ports via svcctl ensure (Agent Port Registry).
+  Use when developing a new local HTTP/API service, onboarding a third-party
+  service for the first time, moving a service to another device, or explicitly
+  changing its port configuration. Obtain a fixed port from APR and persist it
+  into the service's normal startup configuration. Do not run ensure on every restart.
 ---
 
 # Agent Port Registry
 
-Before starting a local listening service, request its port resources through
-`svcctl ensure`.
+APR is Agents-first: the Agent configures the service. The service does not need
+APR integration and APR does not adapt itself around an already chosen port.
 
-## Required workflow
+## Decide whether ensure is needed
 
-1. Identify the service:
-   - Agent type;
-   - optional Agent project ID;
-   - stable service key;
-   - optional instance key;
-   - service name and purpose;
-   - code path;
-   - working directory;
-   - start command template.
+1. Inspect the service's default startup script, command, environment file, or
+   application config.
+2. If it already contains the APR-assigned fixed port for this device, do not
+   call `ensure`; start the service normally with that persisted configuration.
+3. Call `svcctl ensure` only for:
+   - first development/configuration of a new service;
+   - first onboarding of a third-party service;
+   - a device move;
+   - a missing or intentionally changed port configuration.
 
-2. Determine the resource requirement:
-   - one port;
-   - one contiguous port block;
-   - or a specified number of named ports.
+## First-configuration workflow
 
-3. Call `svcctl ensure` with a JSON request.
+1. Confirm this Agent is scoped to the node that actually runs the service,
+   then identify the project, stable service key and instance.
+2. Collect useful metadata: project origin, description, code path, working
+   directory, default start/stop commands, health check, and configuration location.
+3. Request the required TCP/UDP resources with `svcctl ensure`.
+4. Parse the returned ports and verify availability.
+5. Write the assigned values into the service's normal source of truth, such as:
+   - its default startup script or checked-in development command;
+   - `.env` or another local environment file;
+   - the third-party application's supported config file;
+   - a launch/service definition.
+6. Update the registered `start_command` metadata so it describes the same
+   default startup path. `{{ports.http}}` placeholders are allowed in APR metadata.
+7. Start the service through its normal command, verify its health check, and
+   report the persisted config location, service ID, device, and ports.
 
-4. Parse the returned JSON.
-
-5. Check each returned port's availability.
-
-6. Substitute the ports into the service command or environment.
-
-7. Start the service.
-
-8. Report the registered service and allocated ports.
-
-## Example
+## Request example
 
 ```bash
 cat <<'EOF' | svcctl ensure --json -
 {
-  "agent": {
-    "type": "codex",
-    "project_id": "optional-project-id"
-  },
+  "agent": { "type": "codex" },
   "service": {
     "key": "model-api",
     "instance": "main",
+    "project_id": "model-platform",
+    "project_origin": "self-built",
     "name": "Model API",
     "description": "Local model inference API",
     "code_path": "/path/to/project",
     "working_directory": "/path/to/project",
-    "start_command": "uv run python -m api --port {{ports.http}}"
+    "start_command": "./scripts/start --port {{ports.http}}",
+    "stop_command": "./scripts/stop",
+    "health_check": "http://127.0.0.1:{{ports.http}}/healthz",
+    "configuration": ".env.local: MODEL_API_PORT"
   },
   "allocation_name": "default",
   "resources": [
-    { "name": "http", "type": "single" },
-    { "name": "metrics", "type": "single" }
+    { "name": "http", "type": "single", "transport": "tcp" },
+    { "name": "metrics", "type": "single", "transport": "tcp" }
   ]
 }
 EOF
@@ -68,14 +73,20 @@ EOF
 
 ## Mandatory rules
 
-- Never select a listening port directly.
-- Never assume a common port is available.
-- Never silently replace a fixed allocation.
-- Reuse the same allocation on every restart.
+- Never make `ensure` a dependency of every service start.
+- Never choose a formal service port directly or assume a common port is free.
+- Persist the returned fixed port before treating first configuration as complete.
+- Agent type is audit metadata, not service identity.
+- Call `ensure` only on the APR instance local to the service. A master APR must
+  never call remote `ensure` or mutate a slave registry.
+- Service identity inside one APR is project + service key + instance; the APR
+  instance itself defines the node scope.
+- A master may read slave data and proxy explicitly requested start/stop through
+  SSH, but may not change slave metadata, allocations, config, database, or APR package.
+- SSH local forwards belong to the master; a slave is only the routing target.
 - A stopped service retains its allocation.
-- Release only after an explicit user request.
-- The Agent project ID is optional.
-- A service may own multiple named ports.
-- When an existing port is occupied by an unknown process, stop and report the
-  conflict instead of allocating a replacement.
-- If `svcctl` / APR returns an error, do not bypass APR to start a formal service.
+- Release or reconfigure only after an explicit user request.
+- If a persisted port is occupied by an unknown process, report the conflict;
+  do not silently allocate a replacement.
+- Do not create a compatibility or fixed-port import path. Reconfigure the
+  service to use its APR-assigned port.

@@ -1,13 +1,13 @@
 # Agent Port Registry (APR)
 
-本机端口分配与服务索引工具。Coding Agent（Codex / Claude Code / Grok Build 等）在启动需要监听端口的服务前，通过 `svcctl ensure` 申请**固定且幂等**的端口，并登记服务元数据。
+Agents-first 的本地 HTTP/API 服务端口与服务索引。Agent 在新服务开发、第三方服务首次接入、设备迁移或显式重配置时，通过 `svcctl ensure` 取得固定端口，并把端口写进服务的默认启动脚本、命令、环境变量或配置文件。日常重启直接使用已持久化配置，不依赖 APR。
 
 | 文档 | 路径 |
 |---|---|
-| 产品需求 | `Agent_Port_Registry_Local_PRD_v1.0.md` |
+| 产品需求 | `docs/PRD.md` |
 | 架构与选型 | `docs/architecture.md` |
+| 领域上下文与权限 | `CONTEXT.md` |
 | 实现计划 | `docs/plan.md` |
-| v2 计划（Web UI / 主从 / 转发） | `docs/plan-v2-webui.md` |
 | 验收 | `docs/acceptance.md` |
 | Agent Skills | `skills/` |
 
@@ -68,25 +68,30 @@ uv run svcctl status
 # Agent / 脚本标准调用
 cat <<'EOF' | uv run svcctl ensure --json -
 {
-  "agent": { "type": "codex", "project_id": "my-project" },
+  "agent": { "type": "codex" },
   "service": {
     "key": "model-api",
     "instance": "main",
+    "project_id": "my-project",
+    "project_origin": "self-built",
     "name": "Model API",
     "description": "本地模型接口",
     "code_path": "/home/you/projects/model-platform",
-    "start_command": "uv run python -m api --port {{ports.http}}"
+    "start_command": "./scripts/start --port {{ports.http}}",
+    "stop_command": "./scripts/stop",
+    "health_check": "http://127.0.0.1:{{ports.http}}/healthz",
+    "configuration": ".env.local: MODEL_API_PORT"
   },
   "allocation_name": "default",
   "resources": [
-    { "name": "http", "type": "single" },
-    { "name": "metrics", "type": "single" }
+    { "name": "http", "type": "single", "transport": "tcp" },
+    { "name": "metrics", "type": "single", "transport": "tcp" }
   ]
 }
 EOF
 
-# 人工快捷方式
-uv run svcctl ensure --service model-api --port http --name "Model API"
+# 首次配置快捷方式；拿到端口后必须写入服务默认配置
+uv run svcctl ensure --service model-api --project my-project --port http --name "Model API"
 uv run svcctl ensure --service workers --block workers=8
 uv run svcctl ensure --service model-api --ports http,metrics,debug
 
@@ -146,8 +151,9 @@ TCP 只绑回环，不要暴露到对外网卡（APR 没有鉴权，安全模型
 |---|---|
 | 概览 | KPI、端口池占用图、按项目分布、已分配但无监听的端口 |
 | 服务 | 过滤 / 排序 / 实时监听状态 |
-| 服务详情 | 端口与占用进程、元数据、`{{ports.x}}` 渲染后的启动命令、分配历史 |
+| 服务详情 | 端口与占用进程、启动/停止/健康检查/配置位置、控制台、分配历史 |
 | 端口 | 端口反查、池内未登记的监听进程 |
+| 节点 | 中心登记的设备、节点服务详情、AutoSSH 转发及服务直达链接 |
 
 `⌘K` / `Ctrl+K` 打开命令面板。
 
@@ -166,12 +172,20 @@ npm run build   # 产物写回 src/apr/webui/static/，需一并提交
 ## 架构摘要
 
 ```text
-Agent Skill → svcctl CLI → APR Registry (Unix Socket HTTP) → SQLite
+目标节点 Agent → 首次 ensure → 目标节点本地 APR
+             → 写服务默认配置 → 后续正常启动
+
+主节点 Web UI ──SSH 只读──> 从节点服务注册表
+主节点 Web UI ──SSH 代理──> 用户触发的远端 start/stop/status/logs
+主节点 APR   ──本机拥有──> SSH/AutoSSH 本机端口转发
 ```
 
-- 默认端口池：`20000–39999`（可配置）
+- 默认端口池：`41000–45999`（避开常见开发端口与现有手工转发）
 - 分配算法：First Fit；排除已 Claim 与本机 Listener
-- 幂等键：`agent.type + agent.project_id + service.key + instance` + `allocation_name`
+- 每个 APR 数据库只管理所在节点的服务和端口
+- 服务身份：`service.project_id + service.key + instance`；节点由 APR 实例天然确定
+- Agent 类型只记录“由谁登记”，不参与身份
+- 主节点不得修改从节点服务注册表、端口、配置或 APR 程序
 
 详见 `docs/architecture.md`。
 
@@ -190,8 +204,8 @@ Agent Skill → svcctl CLI → APR Registry (Unix Socket HTTP) → SQLite
 web:
   enabled: true       # 浏览器 UI，绑定 127.0.0.1:17989
 port_pool:
-  start: 20000
-  end: 39999
+  start: 41000
+  end: 45999
   exclude:
     - 22000
     - 25000-25100
@@ -205,7 +219,7 @@ auto_start: true
 - 通用规则：`skills/common/SKILL.md`
 - Codex / Claude Code / Grok Build 适配说明
 
-所有 Agent 只调用统一的 `svcctl` 接口。
+所有 Agent 只调用统一的 `svcctl` 接口。`ensure` 是首次配置与重配置操作，不是每次启动的前置条件。
 
 ### 安装到 Codex 全局技能
 
