@@ -12,6 +12,7 @@ import {
   FormError,
   Modal,
   TextInput,
+  TextSelect,
   TextTextarea,
 } from './ui'
 
@@ -28,6 +29,10 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
   const [codePath, setCodePath] = useState(service.code_path ?? '')
   const [workingDirectory, setWorkingDirectory] = useState(service.working_directory ?? '')
   const [startCommand, setStartCommand] = useState(service.start_command ?? '')
+  const [stopCommand, setStopCommand] = useState(service.stop_command ?? '')
+  const [healthCheck, setHealthCheck] = useState(service.health_check ?? '')
+  const [configuration, setConfiguration] = useState(service.configuration ?? '')
+  const [projectOrigin, setProjectOrigin] = useState(service.project_origin ?? 'self-built')
 
   const mutation = useMutation({
     mutationFn: (body: ServiceUpdateRequest) => api.patchService(service.id, body),
@@ -42,6 +47,10 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
           code_path: body.code_path ?? previous.code_path,
           working_directory: body.working_directory ?? previous.working_directory,
           start_command: body.start_command ?? previous.start_command,
+          stop_command: body.stop_command ?? previous.stop_command,
+          health_check: body.health_check ?? previous.health_check,
+          configuration: body.configuration ?? previous.configuration,
+          project_origin: body.project_origin ?? previous.project_origin,
         })
       }
       return { previous }
@@ -64,6 +73,10 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
     setCodePath(service.code_path ?? '')
     setWorkingDirectory(service.working_directory ?? '')
     setStartCommand(service.start_command ?? '')
+    setStopCommand(service.stop_command ?? '')
+    setHealthCheck(service.health_check ?? '')
+    setConfiguration(service.configuration ?? '')
+    setProjectOrigin(service.project_origin ?? 'self-built')
     mutation.reset()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, service.id])
@@ -76,6 +89,10 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
       code_path: codePath.trim() || null,
       working_directory: workingDirectory.trim() || null,
       start_command: startCommand.trim() || null,
+      stop_command: stopCommand.trim() || null,
+      health_check: healthCheck.trim() || null,
+      configuration: configuration.trim() || null,
+      project_origin: projectOrigin,
     })
   }
 
@@ -84,7 +101,7 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
       open={open}
       onClose={mutation.isPending ? () => undefined : onClose}
       title="编辑服务元数据"
-      hint="标识（agent / project / key / instance）创建后不可改"
+      hint="项目 / service / instance 标识创建后不可改；本界面只管理当前节点服务"
     >
       <form onSubmit={submit} className="space-y-3">
         <div>
@@ -106,12 +123,59 @@ export default function EditServiceForm({ open, onClose, service }: Props) {
           />
         </div>
         <div>
+          <FieldLabel htmlFor="edit-origin">项目来源</FieldLabel>
+          <TextSelect
+            id="edit-origin"
+            value={projectOrigin}
+            onChange={(e) =>
+              setProjectOrigin(
+                e.target.value as 'self-built' | 'third-party-open-source' | 'external',
+              )
+            }
+            disabled={mutation.isPending}
+          >
+            <option value="self-built">自研项目</option>
+            <option value="third-party-open-source">第三方开源项目</option>
+            <option value="external">其他外部项目</option>
+          </TextSelect>
+        </div>
+        <div>
           <FieldLabel htmlFor="edit-code">代码路径</FieldLabel>
           <TextInput
             id="edit-code"
             value={codePath}
             onChange={(e) => setCodePath(e.target.value)}
             className="font-mono"
+            disabled={mutation.isPending}
+          />
+        </div>
+        <div>
+          <FieldLabel htmlFor="edit-stop">停止命令</FieldLabel>
+          <TextTextarea
+            id="edit-stop"
+            value={stopCommand}
+            onChange={(e) => setStopCommand(e.target.value)}
+            disabled={mutation.isPending}
+          />
+        </div>
+        <div>
+          <FieldLabel htmlFor="edit-health">健康检查</FieldLabel>
+          <TextInput
+            id="edit-health"
+            value={healthCheck}
+            onChange={(e) => setHealthCheck(e.target.value)}
+            className="font-mono"
+            disabled={mutation.isPending}
+          />
+        </div>
+        <div>
+          <FieldLabel htmlFor="edit-config">端口写入位置</FieldLabel>
+          <TextInput
+            id="edit-config"
+            value={configuration}
+            onChange={(e) => setConfiguration(e.target.value)}
+            className="font-mono"
+            placeholder=".env: PORT / scripts/start.sh: --port"
             disabled={mutation.isPending}
           />
         </div>

@@ -78,6 +78,16 @@ export function servicePorts(service: Service): { port: number; label: string }[
     .sort((a, b) => a.port - b.port)
 }
 
+/** Project label across local records and SSH node snapshots. */
+export function serviceProjectKey(service: Service): string {
+  return service.project_key || service.agent_project_key || service.agent_project_id || '-'
+}
+
+/** Registration actor across local records and SSH node snapshots. */
+export function serviceAgentLabel(service: Service): string {
+  return service.registered_by_agent || service.agent_type || 'human'
+}
+
 /** Trim a long command for single-line display without hiding the tail. */
 export function truncateMiddle(text: string, max = 72): string {
   if (text.length <= max) return text

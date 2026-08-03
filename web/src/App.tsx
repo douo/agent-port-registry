@@ -18,6 +18,10 @@ export default function App() {
         <Route path="/ports" element={<Ports />} />
         <Route path="/nodes" element={<Nodes />} />
         <Route path="/nodes/:id" element={<NodeDetail />} />
+        <Route
+          path="/nodes/:nodeId/services/:id"
+          element={<ServiceDetail />}
+        />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

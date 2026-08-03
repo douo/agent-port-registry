@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
 import { Boxes, LayoutDashboard, Network } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
-import { servicePorts } from '../lib/format'
+import { serviceAgentLabel, servicePorts, serviceProjectKey } from '../lib/format'
 
 interface Props {
   open: boolean
@@ -79,8 +79,8 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
                 value={[
                   service.name,
                   service.service_key,
-                  service.agent_project_key,
-                  service.agent_type_key,
+                  serviceProjectKey(service),
+                  serviceAgentLabel(service),
                   ...ports.map((p) => String(p.port)),
                 ].join(' ')}
                 onSelect={() => go(`/services/${service.id}`)}
@@ -89,7 +89,7 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
                 <span className="truncate">{service.name}</span>
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
                   <span className="text-[11px] text-faint">
-                    {service.agent_project_key}
+                    {serviceProjectKey(service)}
                   </span>
                   {ports.map((p) => (
                     <span key={p.port} className="chip">

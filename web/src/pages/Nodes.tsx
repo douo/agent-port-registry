@@ -18,6 +18,7 @@ import {
 } from '../components/ui'
 
 function statusOf(node: Node): { label: string; tone: string } {
+  if (node.kind === 'forward-only') return { label: '仅转发', tone: 'text-brand' }
   const snap = node.snapshot
   if (!node.enabled) return { label: '已禁用', tone: 'text-faint' }
   if (!snap) return { label: '未同步', tone: 'text-idle' }
@@ -59,14 +60,14 @@ export default function Nodes() {
 
   if (nodes.isError) return <ErrorNote error={nodes.error} />
 
-  const list = nodes.data ?? []
+  const list = (nodes.data ?? []).filter((node) => node.kind !== 'local')
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-sm text-muted">
-          通过 SSH 管理从节点；服务列表与启停走远程 <code className="text-xs">svcctl</code>，
-          端口转发用 <code className="text-xs">autossh</code>。
+          通过 SSH config 别名管理从节点；网络变化时 OpenSSH 重新解析 Match 规则，
+          <code className="text-xs">autossh</code> 负责重连。
         </p>
         <Button variant="primary" className="ml-auto shrink-0" onClick={() => setAddOpen(true)}>
           <Plus size={14} />
@@ -196,6 +197,7 @@ function AddNodeModal({
     ssh_user: '',
     ssh_port: undefined,
     identity_file: '',
+    ssh_config_managed: true,
     apr_command: 'svcctl',
   })
   const [error, setError] = useState<unknown>(null)
@@ -208,6 +210,7 @@ function AddNodeModal({
         ssh_user: form.ssh_user?.trim() || null,
         ssh_port: form.ssh_port || null,
         identity_file: form.identity_file?.trim() || null,
+        ssh_config_managed: form.ssh_config_managed,
         apr_command: form.apr_command?.trim() || 'svcctl',
       }),
     onSuccess: async () => {
@@ -218,6 +221,7 @@ function AddNodeModal({
         ssh_user: '',
         ssh_port: undefined,
         identity_file: '',
+        ssh_config_managed: true,
         apr_command: 'svcctl',
       })
       await onCreated()
@@ -226,7 +230,12 @@ function AddNodeModal({
   })
 
   return (
-    <Modal open={open} onClose={onClose} title="添加从节点" hint="需已配置 SSH 密钥登录（BatchMode）">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="添加从节点"
+      hint="推荐填写 ~/.ssh/config 中的 Host 别名，让 Match exec 按当前网络自动选线路"
+    >
       <div className="space-y-3 px-1 pb-1">
         <div>
           <FieldLabel>显示名称</FieldLabel>
@@ -242,7 +251,7 @@ function AddNodeModal({
             <TextInput
               value={form.ssh_host}
               onChange={(e) => setForm((f) => ({ ...f, ssh_host: e.target.value }))}
-              placeholder="192.168.1.50 或 host.local"
+              placeholder="p44"
             />
           </div>
           <div>
@@ -251,9 +260,26 @@ function AddNodeModal({
               value={form.ssh_user ?? ''}
               onChange={(e) => setForm((f) => ({ ...f, ssh_user: e.target.value }))}
               placeholder="默认当前用户"
+              disabled={form.ssh_config_managed !== false}
             />
           </div>
         </div>
+        <label className="flex items-start gap-2 rounded-lg border border-line-soft bg-raised/40 px-3 py-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={form.ssh_config_managed !== false}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, ssh_config_managed: e.target.checked }))
+            }
+          />
+          <span>
+            <span className="block text-fg">连接参数由 SSH config 管理</span>
+            <span className="block text-xs text-faint">
+              APR 只传 Host 别名，不覆盖用户、端口、密钥、ProxyJump 或 Match 规则
+            </span>
+          </span>
+        </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <FieldLabel hint="可选">端口</FieldLabel>
@@ -267,6 +293,7 @@ function AddNodeModal({
                 }))
               }
               placeholder="22"
+              disabled={form.ssh_config_managed !== false}
             />
           </div>
           <div>
@@ -275,6 +302,7 @@ function AddNodeModal({
               value={form.identity_file ?? ''}
               onChange={(e) => setForm((f) => ({ ...f, identity_file: e.target.value }))}
               placeholder="~/.ssh/id_ed25519"
+              disabled={form.ssh_config_managed !== false}
             />
           </div>
         </div>

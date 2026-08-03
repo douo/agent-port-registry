@@ -30,6 +30,7 @@ interface Props {
 interface ResourceDraft {
   name: string
   type: ResourceType
+  transport: 'tcp' | 'udp'
   size: string
   count: string
   portNames: string
@@ -40,6 +41,7 @@ function emptyResource(name = 'http'): ResourceDraft {
   return {
     name,
     type: 'single',
+    transport: 'tcp',
     size: '2',
     count: '2',
     portNames: '',
@@ -51,7 +53,7 @@ function toSpec(r: ResourceDraft): ResourceSpec {
   const name = r.name.trim()
   if (!name) throw new Error('资源名称不能为空')
 
-  const base: ResourceSpec = { name, type: r.type }
+  const base: ResourceSpec = { name, type: r.type, transport: r.transport }
   if (r.type === 'block') {
     const size = Number(r.size)
     if (!Number.isInteger(size) || size < 1) throw new Error(`资源 ${name}：block 需要 size ≥ 1`)
@@ -87,10 +89,9 @@ export default function EnsureForm({ open, onClose, service }: Props) {
   const navigate = useNavigate()
   const qc = useQueryClient()
 
-  const [agentType, setAgentType] = useState(service?.agent_type ?? service?.agent_type_key ?? '')
-  const [projectId, setProjectId] = useState(
-    service?.agent_project_id ?? service?.agent_project_key ?? '',
-  )
+  const [agentType, setAgentType] = useState(service?.registered_by_agent ?? '')
+  const [projectId, setProjectId] = useState(service?.project_id ?? '')
+  const [projectOrigin, setProjectOrigin] = useState(service?.project_origin ?? 'self-built')
   const [serviceKey, setServiceKey] = useState(service?.service_key ?? '')
   const [instance, setInstance] = useState(service?.instance_key ?? 'default')
   const [name, setName] = useState(service?.name ?? '')
@@ -98,6 +99,9 @@ export default function EnsureForm({ open, onClose, service }: Props) {
   const [codePath, setCodePath] = useState(service?.code_path ?? '')
   const [workingDirectory, setWorkingDirectory] = useState(service?.working_directory ?? '')
   const [startCommand, setStartCommand] = useState(service?.start_command ?? '')
+  const [stopCommand, setStopCommand] = useState(service?.stop_command ?? '')
+  const [healthCheck, setHealthCheck] = useState(service?.health_check ?? '')
+  const [configuration, setConfiguration] = useState(service?.configuration ?? '')
   const [allocationName, setAllocationName] = useState(isExisting ? '' : 'default')
   const [resources, setResources] = useState<ResourceDraft[]>([emptyResource()])
   const [localError, setLocalError] = useState<string | null>(null)
@@ -113,8 +117,9 @@ export default function EnsureForm({ open, onClose, service }: Props) {
 
   useEffect(() => {
     if (!open) return
-    setAgentType(service?.agent_type ?? service?.agent_type_key ?? '')
-    setProjectId(service?.agent_project_id ?? service?.agent_project_key ?? '')
+    setAgentType(service?.registered_by_agent ?? '')
+    setProjectId(service?.project_id ?? '')
+    setProjectOrigin(service?.project_origin ?? 'self-built')
     setServiceKey(service?.service_key ?? '')
     setInstance(service?.instance_key ?? 'default')
     setName(service?.name ?? '')
@@ -122,6 +127,9 @@ export default function EnsureForm({ open, onClose, service }: Props) {
     setCodePath(service?.code_path ?? '')
     setWorkingDirectory(service?.working_directory ?? '')
     setStartCommand(service?.start_command ?? '')
+    setStopCommand(service?.stop_command ?? '')
+    setHealthCheck(service?.health_check ?? '')
+    setConfiguration(service?.configuration ?? '')
     setAllocationName(
       service ? `alloc-${Date.now().toString(36).slice(-4)}` : 'default',
     )
@@ -163,18 +171,20 @@ export default function EnsureForm({ open, onClose, service }: Props) {
     }
 
     const body: EnsureRequest = {
-      agent: {
-        type: agentType.trim() || null,
-        project_id: projectId.trim() || null,
-      },
+      agent: agentType.trim() ? { type: agentType.trim() } : null,
       service: {
         key,
         instance: instance.trim() || 'default',
+        project_id: projectId.trim() || null,
+        project_origin: projectOrigin,
         name: name.trim() || key,
         description: description.trim() || null,
         code_path: codePath.trim() || null,
         working_directory: workingDirectory.trim() || null,
         start_command: startCommand.trim() || null,
+        stop_command: stopCommand.trim() || null,
+        health_check: healthCheck.trim() || null,
+        configuration: configuration.trim() || null,
       },
       allocation_name: allocationName.trim() || 'default',
       resources: specs,
@@ -186,11 +196,11 @@ export default function EnsureForm({ open, onClose, service }: Props) {
     <Modal
       open={open}
       onClose={mutation.isPending ? () => undefined : onClose}
-      title={isExisting ? '申请端口' : '新建服务并分配端口'}
+      title={isExisting ? '调整端口配置' : '首次配置服务'}
       hint={
         isExisting
-          ? '使用同一服务标识追加一次 ensure；规格与已有分配冲突时会报错'
-          : '调用 POST /v1/allocations/ensure，幂等创建服务与端口分配'
+          ? '仅在新增端口或显式重配置时调用；日常启动直接使用已持久化的端口'
+          : '先取得固定端口，再由 Agent 写入默认启动脚本、命令、环境变量或配置文件'
       }
       wide
     >
@@ -242,7 +252,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
             />
           </div>
           <div>
-            <FieldLabel htmlFor="agent-type">Agent 类型</FieldLabel>
+            <FieldLabel htmlFor="agent-type">登记 Agent</FieldLabel>
             <TextInput
               id="agent-type"
               value={agentType}
@@ -262,6 +272,23 @@ export default function EnsureForm({ open, onClose, service }: Props) {
               disabled={isExisting || mutation.isPending}
               className="font-mono"
             />
+          </div>
+          <div>
+            <FieldLabel htmlFor="project-origin">项目来源</FieldLabel>
+            <TextSelect
+              id="project-origin"
+              value={projectOrigin}
+              onChange={(e) =>
+                setProjectOrigin(
+                  e.target.value as 'self-built' | 'third-party-open-source' | 'external',
+                )
+              }
+              disabled={mutation.isPending}
+            >
+              <option value="self-built">自研项目</option>
+              <option value="third-party-open-source">第三方开源项目</option>
+              <option value="external">其他外部项目</option>
+            </TextSelect>
           </div>
         </section>
 
@@ -300,7 +327,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
             </div>
             <div>
               <FieldLabel htmlFor="start-cmd" hint="支持 {{ports.http}} 占位符">
-                启动命令
+                默认启动命令
               </FieldLabel>
               <TextTextarea
                 id="start-cmd"
@@ -309,6 +336,40 @@ export default function EnsureForm({ open, onClose, service }: Props) {
                 placeholder="uv run python -m api --port {{ports.http}}"
                 disabled={mutation.isPending}
               />
+            </div>
+            <div>
+              <FieldLabel htmlFor="stop-cmd">停止命令</FieldLabel>
+              <TextTextarea
+                id="stop-cmd"
+                value={stopCommand}
+                onChange={(e) => setStopCommand(e.target.value)}
+                placeholder="可选；用于安全停止服务"
+                disabled={mutation.isPending}
+              />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <FieldLabel htmlFor="health-check">健康检查</FieldLabel>
+                <TextInput
+                  id="health-check"
+                  value={healthCheck}
+                  onChange={(e) => setHealthCheck(e.target.value)}
+                  placeholder="http://127.0.0.1:{{ports.http}}/healthz"
+                  className="font-mono"
+                  disabled={mutation.isPending}
+                />
+              </div>
+              <div>
+                <FieldLabel htmlFor="configuration">端口写入位置</FieldLabel>
+                <TextInput
+                  id="configuration"
+                  value={configuration}
+                  onChange={(e) => setConfiguration(e.target.value)}
+                  placeholder=".env: PORT / scripts/start.sh: --port"
+                  className="font-mono"
+                  disabled={mutation.isPending}
+                />
+              </div>
             </div>
           </section>
         )}
@@ -338,7 +399,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
               key={i}
               className="space-y-2 rounded-lg border border-line-soft bg-raised/40 p-3"
             >
-              <div className="grid gap-2 sm:grid-cols-4">
+              <div className="grid gap-2 sm:grid-cols-5">
                 <div>
                   <FieldLabel>名称 *</FieldLabel>
                   <TextInput
@@ -347,6 +408,19 @@ export default function EnsureForm({ open, onClose, service }: Props) {
                     className="font-mono"
                     disabled={mutation.isPending}
                   />
+                </div>
+                <div>
+                  <FieldLabel>协议</FieldLabel>
+                  <TextSelect
+                    value={r.transport}
+                    onChange={(e) =>
+                      updateResource(i, { transport: e.target.value as 'tcp' | 'udp' })
+                    }
+                    disabled={mutation.isPending}
+                  >
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                  </TextSelect>
                 </div>
                 <div>
                   <FieldLabel>类型</FieldLabel>
@@ -441,7 +515,7 @@ export default function EnsureForm({ open, onClose, service }: Props) {
             取消
           </Button>
           <Button type="submit" variant="primary" disabled={mutation.isPending}>
-            {mutation.isPending ? '提交中…' : isExisting ? '申请端口' : '创建并分配'}
+            {mutation.isPending ? '提交中…' : isExisting ? '确认重配置' : '取得固定端口'}
           </Button>
         </div>
       </form>

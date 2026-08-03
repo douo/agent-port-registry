@@ -62,6 +62,7 @@ export interface AllocatedPort {
   resource_name: string
   port_name: string | null
   port: number
+  transport?: 'tcp' | 'udp'
   ordinal: number
 }
 
@@ -79,10 +80,14 @@ export interface Allocation {
 
 export interface Service {
   id: string
-  agent_type: string | null
-  agent_project_id: string | null
-  agent_type_key: string
-  agent_project_key: string
+  device_id: string
+  project_id: string | null
+  project_key: string
+  registered_by_agent: string | null
+  agent_type?: string | null
+  agent_project_id?: string | null
+  agent_project_key?: string
+  project_origin: 'self-built' | 'third-party-open-source' | 'external' | null
   service_key: string
   instance_key: string
   name: string
@@ -90,6 +95,9 @@ export interface Service {
   code_path: string | null
   working_directory: string | null
   start_command: string | null
+  stop_command: string | null
+  health_check: string | null
+  configuration: string | null
   created_at: string
   updated_at: string
   allocations: Allocation[]
@@ -107,6 +115,7 @@ export interface Pool {
   claimed_count: number
   claimed_ranges: [number, number][]
   listening_in_pool: number[]
+  managed_outside_pool?: number[]
   free: number
   utilization: number
 }
@@ -134,6 +143,7 @@ export interface WithinRange {
 export interface ResourceSpec {
   name: string
   type: ResourceType
+  transport?: 'tcp' | 'udp'
   size?: number
   count?: number
   contiguous?: boolean
@@ -145,17 +155,21 @@ export interface ResourceSpec {
 
 export interface AgentContext {
   type?: string | null
-  project_id?: string | null
 }
 
 export interface ServiceInput {
   key: string
   instance?: string | null
+  project_id?: string | null
+  project_origin?: 'self-built' | 'third-party-open-source' | 'external' | null
   name?: string | null
   description?: string | null
   code_path?: string | null
   working_directory?: string | null
   start_command?: string | null
+  stop_command?: string | null
+  health_check?: string | null
+  configuration?: string | null
 }
 
 export interface EnsureRequest {
@@ -168,6 +182,7 @@ export interface EnsureRequest {
 export interface EnsureResponse {
   service_id: string
   allocation_id: string
+  device_id: string
   existing: boolean
   sticky: boolean
   ports: Record<string, number>
@@ -186,6 +201,10 @@ export interface ServiceUpdateRequest {
   code_path?: string | null
   working_directory?: string | null
   start_command?: string | null
+  stop_command?: string | null
+  health_check?: string | null
+  configuration?: string | null
+  project_origin?: 'self-built' | 'third-party-open-source' | 'external' | null
 }
 
 export interface ReleaseResult {
@@ -222,6 +241,7 @@ export interface Node {
   ssh_user: string | null
   ssh_port: number | null
   identity_file: string | null
+  ssh_config_managed: boolean
   apr_command: string
   enabled: boolean
   refresh_interval_seconds: number
@@ -238,12 +258,14 @@ export interface NodeCreateRequest {
   ssh_user?: string | null
   ssh_port?: number | null
   identity_file?: string | null
+  ssh_config_managed?: boolean
   apr_command?: string
   enabled?: boolean
   refresh_interval_seconds?: number
+  kind?: 'remote' | 'local' | 'forward-only'
 }
 
-export type ForwardState = 'starting' | 'active' | 'stopped' | 'failed'
+export type ForwardState = 'starting' | 'active' | 'reconnecting' | 'stopped' | 'failed'
 
 export interface PortForward {
   id: string
@@ -474,6 +496,7 @@ export const api = {
       local_port?: number
       remote_host?: string
       label?: string
+      auto_reconnect?: boolean
     },
   ) =>
     request<PortForward>(`/v1/nodes/${nodeId}/forwards`, {
@@ -482,6 +505,8 @@ export const api = {
     }),
   stopForward: (id: string) =>
     request<PortForward>(`/v1/forwards/${id}`, { method: 'DELETE' }),
+  startForward: (id: string) =>
+    request<PortForward>(`/v1/forwards/${id}/start`, { method: 'POST' }),
 }
 
 /* ------------------------------------------------------------- query utils */
@@ -498,6 +523,10 @@ export const queryKeys = {
   nodes: ['nodes'] as const,
   node: (id: string) => ['node', id] as const,
   nodeServices: (id: string) => ['node-services', id] as const,
+  nodeService: (nodeId: string, serviceId: string) =>
+    ['node-service', nodeId, serviceId] as const,
+  nodeServiceLogs: (nodeId: string, serviceId: string) =>
+    ['node-service-logs', nodeId, serviceId] as const,
   forwards: (nodeId?: string) =>
     nodeId ? (['forwards', nodeId] as const) : (['forwards'] as const),
 }

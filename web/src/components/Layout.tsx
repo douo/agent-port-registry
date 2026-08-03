@@ -100,6 +100,8 @@ export default function Layout() {
     TITLES[location.pathname] ??
     (location.pathname.startsWith('/services/')
       ? '服务详情'
+      : /^\/nodes\/[^/]+\/services\/[^/]+$/.test(location.pathname)
+        ? '从节点服务详情'
       : location.pathname.startsWith('/nodes/')
         ? '节点详情'
         : 'APR')

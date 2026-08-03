@@ -17,9 +17,10 @@ import {
   invalidateServiceViews,
   queryKeys,
   type Allocation,
+  type PortForward,
   type Service,
 } from '../lib/api'
-import { absoluteTime, relativeTime } from '../lib/format'
+import { absoluteTime, relativeTime, serviceAgentLabel, serviceProjectKey } from '../lib/format'
 import EditServiceForm from '../components/EditServiceForm'
 import EnsureForm from '../components/EnsureForm'
 import {
@@ -33,7 +34,7 @@ import {
   StatusDot,
 } from '../components/ui'
 
-/** Preview of `start_command` with {{ports.x}} resolved — phase 4 will run this. */
+/** Preview of `start_command` with {{ports.x}} resolved. */
 function renderCommand(command: string, ports: Record<string, number>): string {
   return command.replace(/\{\{\s*ports\.([A-Za-z0-9_-]+)\s*\}\}/g, (whole, name: string) =>
     name in ports ? String(ports[name]) : whole,
@@ -50,9 +51,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 export default function ServiceDetail() {
-  const { id = '' } = useParams()
+  const { id = '', nodeId = '' } = useParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const remote = Boolean(nodeId)
 
   const [editOpen, setEditOpen] = useState(false)
   const [ensureOpen, setEnsureOpen] = useState(false)
@@ -61,39 +63,102 @@ export default function ServiceDetail() {
   const [actionError, setActionError] = useState<unknown>(null)
 
   const service = useQuery({
-    queryKey: queryKeys.service(id),
-    queryFn: () => api.service(id),
+    queryKey: remote ? queryKeys.nodeService(nodeId, id) : queryKeys.service(id),
+    queryFn: () => (remote ? api.nodeService(nodeId, id) : api.service(id)),
     enabled: Boolean(id),
+    refetchInterval: remote ? 5000 : false,
+  })
+  const node = useQuery({
+    queryKey: queryKeys.node(nodeId),
+    queryFn: () => api.node(nodeId),
+    enabled: remote,
   })
   const listenersQuery = useQuery({
     queryKey: queryKeys.listeners,
     queryFn: () => api.listeners(),
+    enabled: !remote,
   })
-  const overview = useQuery({ queryKey: queryKeys.overview, queryFn: api.overview })
-  const pmEnabled = overview.data?.features?.process_management === true
+  const overview = useQuery({
+    queryKey: queryKeys.overview,
+    queryFn: api.overview,
+    enabled: !remote,
+  })
+  const pmEnabled = remote || overview.data?.features?.process_management === true
   const logsQuery = useQuery({
-    queryKey: queryKeys.serviceLogs(id),
-    queryFn: () => api.serviceLogs(id, 200),
+    queryKey: remote
+      ? queryKeys.nodeServiceLogs(nodeId, id)
+      : queryKeys.serviceLogs(id),
+    queryFn: () =>
+      remote ? api.nodeServiceLogs(nodeId, id, 200) : api.serviceLogs(id, 200),
     enabled: Boolean(id) && pmEnabled,
     refetchInterval: 3000,
   })
+  const forwardsQuery = useQuery({
+    queryKey: queryKeys.forwards(nodeId),
+    queryFn: () => api.forwards(nodeId),
+    enabled: remote,
+    refetchInterval: 5000,
+  })
+
+  async function invalidateCurrentService() {
+    if (remote) {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.nodeService(nodeId, id) }),
+        qc.invalidateQueries({ queryKey: queryKeys.nodeServiceLogs(nodeId, id) }),
+        qc.invalidateQueries({ queryKey: queryKeys.nodeServices(nodeId) }),
+        qc.invalidateQueries({ queryKey: queryKeys.node(nodeId) }),
+      ])
+      return
+    }
+    await invalidateServiceViews(qc, id)
+  }
 
   const startMut = useMutation({
-    mutationFn: () => api.startService(id),
+    mutationFn: () =>
+      remote ? api.startNodeService(nodeId, id) : api.startService(id),
     onSuccess: async () => {
       setActionError(null)
-      await invalidateServiceViews(qc, id)
-      await qc.invalidateQueries({ queryKey: queryKeys.serviceLogs(id) })
+      await invalidateCurrentService()
     },
     onError: (err) => setActionError(err),
   })
 
   const stopMut = useMutation({
-    mutationFn: () => api.stopService(id),
+    mutationFn: () =>
+      remote ? api.stopNodeService(nodeId, id) : api.stopService(id),
     onSuccess: async () => {
       setActionError(null)
-      await invalidateServiceViews(qc, id)
-      await qc.invalidateQueries({ queryKey: queryKeys.serviceLogs(id) })
+      await invalidateCurrentService()
+    },
+    onError: (err) => setActionError(err),
+  })
+
+  const forwardOn = useMutation({
+    mutationFn: (args: { port: number; label: string; forwardId?: string }) =>
+      args.forwardId
+        ? api.startForward(args.forwardId)
+        : api.createForward(nodeId, {
+            remote_port: args.port,
+            label: args.label,
+          }),
+    onSuccess: async () => {
+      setActionError(null)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.forwards(nodeId) }),
+        qc.invalidateQueries({ queryKey: queryKeys.overview }),
+      ])
+    },
+    onError: (err) => setActionError(err),
+  })
+
+  const forwardOff = useMutation({
+    mutationFn: (forwardId: string) => api.stopForward(forwardId),
+    onSuccess: async () => {
+      setActionError(null)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.forwards(nodeId) }),
+        qc.invalidateQueries({ queryKey: queryKeys.overview }),
+      ])
     },
     onError: (err) => setActionError(err),
   })
@@ -158,9 +223,11 @@ export default function ServiceDetail() {
   })
 
   if (service.isError) return <ErrorNote error={service.error} />
+  if (remote && node.isError) return <ErrorNote error={node.error} />
   if (!service.data) return <Loading />
 
   const s = service.data
+  const nodeName = node.data?.name ?? '从节点'
   const listeners = new Map((listenersQuery.data ?? []).map((l) => [l.port, l]))
   const reserved = s.allocations.filter((a) => a.state === 'reserved')
   const released = s.allocations.filter((a) => a.state === 'released')
@@ -169,7 +236,6 @@ export default function ServiceDetail() {
   for (const alloc of reserved) {
     for (const p of alloc.ports) portMap[p.port_name ?? p.resource_name] = p.port
   }
-  const anyLive = Object.values(portMap).some((p) => listeners.has(p))
   const process = s.process ?? null
   // Backend reconcile should clear dead "running" rows; still require alive so a
   // stale payload never shows 启动中 after command-not-found.
@@ -177,24 +243,39 @@ export default function ServiceDetail() {
     process != null &&
     (process.state === 'starting' || process.state === 'running') &&
     process.alive === true
+  const anyLive = remote ? running : Object.values(portMap).some((p) => listeners.has(p))
   const startFailed = process?.state === 'failed'
   const hasStartCommand = Boolean(s.start_command?.trim())
   const processBusy = startMut.isPending || stopMut.isPending
+  const liveForwards = new Map<number, PortForward>()
+  const failedForwards = new Map<number, PortForward>()
+  for (const forward of forwardsQuery.data ?? []) {
+    if (
+      forward.state === 'active' ||
+      forward.state === 'starting' ||
+      forward.state === 'reconnecting'
+    ) {
+      liveForwards.set(forward.remote_port, forward)
+    } else if (forward.state === 'failed' && !failedForwards.has(forward.remote_port)) {
+      failedForwards.set(forward.remote_port, forward)
+    }
+  }
 
   return (
     <div className="space-y-5">
       <div>
         <Link
-          to="/services"
+          to={remote ? `/nodes/${nodeId}` : '/services'}
           className="mb-3 inline-flex items-center gap-1.5 text-xs text-faint transition-colors hover:text-fg"
         >
           <ArrowLeft size={13} />
-          返回服务列表
+          {remote ? `返回 ${nodeName}` : '返回服务列表'}
         </Link>
         <div className="flex flex-wrap items-center gap-3">
           <StatusDot live={anyLive || running} />
           <h2 className="text-xl">{s.name}</h2>
           <span className="chip">{s.id}</span>
+          {remote && <span className="chip">远端 · {nodeName}</span>}
           {running && (
             <span className="rounded bg-live/15 px-1.5 py-0.5 text-[11px] text-live">
               进程运行中 · pid {process?.pid}
@@ -234,18 +315,22 @@ export default function ServiceDetail() {
                 </Button>
               )
             )}
-            <Button variant="secondary" onClick={() => setEnsureOpen(true)}>
-              <Plus size={14} />
-              申请端口
-            </Button>
-            <Button variant="secondary" onClick={() => setEditOpen(true)}>
-              <Pencil size={14} />
-              编辑
-            </Button>
-            <Button variant="danger" onClick={() => setDeleteOpen(true)}>
-              <Trash2 size={14} />
-              删除
-            </Button>
+            {!remote && (
+              <>
+                <Button variant="secondary" onClick={() => setEnsureOpen(true)}>
+                  <Plus size={14} />
+                  申请端口
+                </Button>
+                <Button variant="secondary" onClick={() => setEditOpen(true)}>
+                  <Pencil size={14} />
+                  编辑
+                </Button>
+                <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+                  <Trash2 size={14} />
+                  删除
+                </Button>
+              </>
+            )}
           </div>
         </div>
         {s.description && <p className="mt-2 text-sm text-muted">{s.description}</p>}
@@ -259,7 +344,10 @@ export default function ServiceDetail() {
       </div>
 
       <Panel>
-        <PanelHeader title="端口" hint={`${Object.keys(portMap).length} 个生效端口`} />
+        <PanelHeader
+          title={remote ? '端口与本机入口' : '端口'}
+          hint={`${Object.keys(portMap).length} 个生效端口`}
+        />
         {reserved.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-faint">
             该服务当前没有生效的端口分配
@@ -269,15 +357,23 @@ export default function ServiceDetail() {
             <thead>
               <tr className="border-b border-line-soft text-left text-xs text-faint">
                 <th className="py-2 pl-4 font-normal">名称</th>
-                <th className="py-2 pr-3 font-normal">端口</th>
-                <th className="py-2 pr-3 font-normal">状态</th>
-                <th className="hidden py-2 pr-4 font-normal md:table-cell">进程</th>
+                <th className="py-2 pr-3 font-normal">
+                  {remote ? '远端端口' : '端口'}
+                </th>
+                <th className="py-2 pr-3 font-normal">
+                  {remote ? '本机入口' : '状态'}
+                </th>
+                <th className="hidden py-2 pr-4 font-normal md:table-cell">
+                  {remote ? '远端进程' : '进程'}
+                </th>
               </tr>
             </thead>
             <tbody>
               {reserved.flatMap((alloc) =>
                 alloc.ports.map((p) => {
                   const listener = listeners.get(p.port)
+                  const forward = liveForwards.get(p.port)
+                  const lastFailed = failedForwards.get(p.port)
                   return (
                     <tr
                       key={`${alloc.id}-${p.resource_name}-${p.ordinal}`}
@@ -287,18 +383,80 @@ export default function ServiceDetail() {
                         {p.port_name ?? p.resource_name}
                       </td>
                       <td className="py-2.5 pr-3">
-                        <a
-                          href={`http://127.0.0.1:${p.port}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="chip transition-colors hover:border-brand/50 hover:text-brand"
-                          title="在新标签打开 http://127.0.0.1:该端口"
-                        >
-                          {p.port}
-                        </a>
+                        {remote ? (
+                          <span className="chip">{p.port}</span>
+                        ) : (
+                          <a
+                            href={`http://127.0.0.1:${p.port}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="chip transition-colors hover:border-brand/50 hover:text-brand"
+                            title="在新标签打开 http://127.0.0.1:该端口"
+                          >
+                            {p.port}
+                          </a>
+                        )}
                       </td>
                       <td className="py-2.5 pr-3">
-                        {listener ? (
+                        {remote && forward ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {forward.state === 'active' ? (
+                              <a
+                                href={forward.local_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="chip border-live/30 text-live transition-colors hover:border-live/60"
+                              >
+                                localhost:{forward.local_port}
+                              </a>
+                            ) : (
+                              <span className="text-xs text-idle">
+                                {forward.state === 'reconnecting' ? '等待网络恢复…' : '正在建立…'}
+                              </span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              className="!px-2 !py-0.5 text-[11px]"
+                              disabled={
+                                forwardOff.isPending && forwardOff.variables === forward.id
+                              }
+                              onClick={() => forwardOff.mutate(forward.id)}
+                            >
+                              停止
+                            </Button>
+                          </div>
+                        ) : remote ? (
+                          <div className="flex flex-col items-start gap-1">
+                            <Button
+                              variant="secondary"
+                              className="!px-2 !py-1 text-xs"
+                              disabled={
+                                forwardOn.isPending && forwardOn.variables?.port === p.port
+                              }
+                              onClick={() =>
+                                forwardOn.mutate({
+                                  port: p.port,
+                                  label: `${s.name} ${p.port_name ?? p.resource_name}`,
+                                  forwardId: lastFailed?.id,
+                                })
+                              }
+                            >
+                              {forwardOn.isPending && forwardOn.variables?.port === p.port
+                                ? '转发中…'
+                                : lastFailed
+                                  ? '恢复原端口'
+                                  : '转发到本机'}
+                            </Button>
+                            {lastFailed?.last_error && (
+                              <span
+                                className="max-w-64 truncate text-[11px] text-danger"
+                                title={lastFailed.last_error}
+                              >
+                                上次失败：{lastFailed.last_error}
+                              </span>
+                            )}
+                          </div>
+                        ) : listener ? (
                           <span className="text-xs text-live">监听中</span>
                         ) : (
                           <span className="text-xs text-idle">无监听</span>
@@ -306,11 +464,15 @@ export default function ServiceDetail() {
                       </td>
                       <td
                         className="hidden max-w-md truncate py-2.5 pr-4 font-mono text-[11px] text-faint md:table-cell"
-                        title={listener?.command ?? ''}
+                        title={remote ? process?.command ?? '' : listener?.command ?? ''}
                       >
-                        {listener
-                          ? `${listener.pid ?? '?'} · ${listener.command ?? '—'}`
-                          : '—'}
+                        {remote
+                          ? process
+                            ? `${process.pid ?? '?'} · ${process.command ?? process.state}`
+                            : '—'
+                          : listener
+                            ? `${listener.pid ?? '?'} · ${listener.command ?? '—'}`
+                            : '—'}
                       </td>
                     </tr>
                   )
@@ -324,7 +486,7 @@ export default function ServiceDetail() {
       {(pmEnabled || hasStartCommand) && (
         <Panel>
           <PanelHeader
-            title="进程"
+            title={remote ? '远端控制台' : '进程'}
             hint={
               !pmEnabled
                 ? '进程管理未开启'
@@ -338,7 +500,7 @@ export default function ServiceDetail() {
               pmEnabled ? (
                 <span className="flex items-center gap-1 text-[11px] text-faint">
                   <ScrollText size={12} />
-                  日志自动刷新
+                  {remote ? '通过 SSH 自动刷新' : '日志自动刷新'}
                 </span>
               ) : undefined
             }
@@ -412,9 +574,19 @@ export default function ServiceDetail() {
         <div className="divide-y divide-line-soft">
           <Field label="标识">
             <span className="font-mono text-xs">
-              {s.agent_type_key} / {s.agent_project_key} / {s.service_key} /{' '}
-              {s.instance_key}
+              {remote ? node.data?.name ?? nodeId : '本机'} / {serviceProjectKey(s)} /{' '}
+              {s.service_key} / {s.instance_key}
             </span>
+          </Field>
+          <Field label="登记 Agent">{serviceAgentLabel(s)}</Field>
+          <Field label="项目来源">
+            {s.project_origin === 'self-built'
+              ? '自研项目'
+              : s.project_origin === 'third-party-open-source'
+                ? '第三方开源项目'
+                : s.project_origin === 'external'
+                  ? '其他外部项目'
+                  : '—'}
           </Field>
           <Field label="代码路径">
             {s.code_path ? (
@@ -449,6 +621,27 @@ export default function ServiceDetail() {
               <span className="text-faint">—</span>
             )}
           </Field>
+          <Field label="停止命令">
+            {s.stop_command ? (
+              <code className="font-mono text-xs">{s.stop_command}</code>
+            ) : (
+              <span className="text-faint">—</span>
+            )}
+          </Field>
+          <Field label="健康检查">
+            {s.health_check ? (
+              <code className="font-mono text-xs">{renderCommand(s.health_check, portMap)}</code>
+            ) : (
+              <span className="text-faint">—</span>
+            )}
+          </Field>
+          <Field label="端口配置位置">
+            {s.configuration ? (
+              <code className="font-mono text-xs">{s.configuration}</code>
+            ) : (
+              <span className="text-faint">—</span>
+            )}
+          </Field>
           <Field label="创建 / 更新">
             <span className="text-xs text-muted">
               {absoluteTime(s.created_at)} · 更新于 {relativeTime(s.updated_at)}
@@ -478,7 +671,7 @@ export default function ServiceDetail() {
                 <span className="ml-auto text-[11px] text-faint">
                   {relativeTime(alloc.created_at)}
                 </span>
-                {alloc.state === 'reserved' && (
+                {!remote && alloc.state === 'reserved' && (
                   <Button
                     variant="ghost"
                     className="text-xs text-danger"
@@ -494,7 +687,7 @@ export default function ServiceDetail() {
               <div className="mt-2 flex flex-wrap gap-1">
                 {alloc.ports.map((p) => (
                   <span key={`${p.resource_name}-${p.ordinal}`} className="chip">
-                    {p.port_name ?? p.resource_name}={p.port}
+                    {p.port_name ?? p.resource_name}={p.port}/{p.transport ?? 'tcp'}
                   </span>
                 ))}
               </div>
@@ -508,53 +701,57 @@ export default function ServiceDetail() {
         </ul>
       </Panel>
 
-      <EditServiceForm open={editOpen} onClose={() => setEditOpen(false)} service={s} />
-      <EnsureForm open={ensureOpen} onClose={() => setEnsureOpen(false)} service={s} />
+      {!remote && (
+        <>
+          <EditServiceForm open={editOpen} onClose={() => setEditOpen(false)} service={s} />
+          <EnsureForm open={ensureOpen} onClose={() => setEnsureOpen(false)} service={s} />
 
-      <ConfirmDialog
-        open={releaseTarget != null}
-        onClose={() => {
-          if (!releaseMut.isPending) setReleaseTarget(null)
-        }}
-        onConfirm={() => {
-          if (releaseTarget) releaseMut.mutate(releaseTarget)
-        }}
-        title="释放端口分配"
-        body={
-          releaseTarget ? (
-            <>
-              将释放分配{' '}
-              <span className="font-mono text-fg">{releaseTarget.allocation_name}</span>
-              （{releaseTarget.id}），端口会回到池中。此操作可在之后重新 ensure，但
-              已占用的端口号不一定能拿回。
-            </>
-          ) : null
-        }
-        confirmLabel="确认释放"
-        danger
-        loading={releaseMut.isPending}
-        error={actionError}
-      />
+          <ConfirmDialog
+            open={releaseTarget != null}
+            onClose={() => {
+              if (!releaseMut.isPending) setReleaseTarget(null)
+            }}
+            onConfirm={() => {
+              if (releaseTarget) releaseMut.mutate(releaseTarget)
+            }}
+            title="释放端口分配"
+            body={
+              releaseTarget ? (
+                <>
+                  将释放分配{' '}
+                  <span className="font-mono text-fg">{releaseTarget.allocation_name}</span>
+                  （{releaseTarget.id}），端口会回到池中。此操作可在之后重新 ensure，但
+                  已占用的端口号不一定能拿回。
+                </>
+              ) : null
+            }
+            confirmLabel="确认释放"
+            danger
+            loading={releaseMut.isPending}
+            error={actionError}
+          />
 
-      <ConfirmDialog
-        open={deleteOpen}
-        onClose={() => {
-          if (!deleteMut.isPending) setDeleteOpen(false)
-        }}
-        onConfirm={() => deleteMut.mutate()}
-        title="删除服务"
-        body={
-          <>
-            将<strong className="text-fg">永久删除</strong>服务{' '}
-            <span className="font-mono text-fg">{s.name}</span> 及其全部端口分配与历史记录。
-            此操作不可撤销。
-          </>
-        }
-        confirmLabel="确认删除"
-        danger
-        loading={deleteMut.isPending}
-        error={actionError}
-      />
+          <ConfirmDialog
+            open={deleteOpen}
+            onClose={() => {
+              if (!deleteMut.isPending) setDeleteOpen(false)
+            }}
+            onConfirm={() => deleteMut.mutate()}
+            title="删除服务"
+            body={
+              <>
+                将<strong className="text-fg">永久删除</strong>服务{' '}
+                <span className="font-mono text-fg">{s.name}</span>{' '}
+                及其全部端口分配与历史记录。此操作不可撤销。
+              </>
+            }
+            confirmLabel="确认删除"
+            danger
+            loading={deleteMut.isPending}
+            error={actionError}
+          />
+        </>
+      )}
     </div>
   )
 }

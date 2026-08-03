@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Play, RefreshCw, Square } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Play, RefreshCw, Square } from 'lucide-react'
 import {
   api,
   errorLabel,
@@ -44,15 +44,38 @@ export default function NodeDetail() {
     refetchInterval: 5000,
   })
 
-  const liveByRemote = useMemo(() => {
+  const list: Service[] = services.data?.services ?? []
+  const currentByRemote = useMemo(() => {
     const map = new Map<number, PortForward>()
-    for (const f of forwards.data ?? []) {
-      if (f.state === 'starting' || f.state === 'active') {
+    const newestFirst = [...(forwards.data ?? [])].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    )
+    for (const f of newestFirst) {
+      if (!map.has(f.remote_port)) {
         map.set(f.remote_port, f)
       }
     }
     return map
   }, [forwards.data])
+  const serviceByRemote = useMemo(() => {
+    const map = new Map<number, Service>()
+    for (const service of list) {
+      for (const port of servicePorts(service)) {
+        map.set(port.port, service)
+      }
+    }
+    return map
+  }, [list])
+  const activeForwards = useMemo(
+    () =>
+      (forwards.data ?? []).filter(
+        (forward) =>
+          forward.state === 'active' ||
+          forward.state === 'starting' ||
+          forward.state === 'reconnecting',
+      ),
+    [forwards.data],
+  )
 
   const refreshMut = useMutation({
     mutationFn: () => api.refreshNode(id),
@@ -88,8 +111,10 @@ export default function NodeDetail() {
   })
 
   const forwardOn = useMutation({
-    mutationFn: (args: { port: number; label?: string }) =>
-      api.createForward(id, { remote_port: args.port, label: args.label }),
+    mutationFn: (args: { port: number; label?: string; forwardId?: string }) =>
+      args.forwardId
+        ? api.startForward(args.forwardId)
+        : api.createForward(id, { remote_port: args.port, label: args.label }),
     onMutate: (args) => setBusyKey(`fwd:${args.port}`),
     onSettled: () => setBusyKey(null),
     onSuccess: async () => {
@@ -116,7 +141,6 @@ export default function NodeDetail() {
   if (!node.data) return <Loading />
 
   const n = node.data
-  const list: Service[] = services.data?.services ?? []
 
   return (
     <div className="space-y-5">
@@ -135,17 +159,19 @@ export default function NodeDetail() {
             {n.ssh_host}
             {n.ssh_port ? `:${n.ssh_port}` : ''}
             {' · '}
-            {n.apr_command}
+            {n.kind === 'forward-only' ? '仅管理 SSH 转发' : n.apr_command}
           </div>
         </div>
-        <Button
-          variant="secondary"
-          disabled={refreshMut.isPending}
-          onClick={() => refreshMut.mutate()}
-        >
-          <RefreshCw size={14} className={refreshMut.isPending ? 'animate-spin' : ''} />
-          同步
-        </Button>
+        {n.kind !== 'forward-only' && (
+          <Button
+            variant="secondary"
+            disabled={refreshMut.isPending}
+            onClick={() => refreshMut.mutate()}
+          >
+            <RefreshCw size={14} className={refreshMut.isPending ? 'animate-spin' : ''} />
+            同步
+          </Button>
+        )}
       </div>
 
       {actionError != null && (
@@ -160,9 +186,11 @@ export default function NodeDetail() {
           value={
             n.snapshot?.status === 'ok'
               ? '在线'
-              : n.snapshot?.status === 'error'
-                ? '错误'
-                : '未同步'
+                : n.snapshot?.status === 'error'
+                  ? '错误'
+                  : n.kind === 'forward-only'
+                    ? '仅转发'
+                    : '未同步'
           }
         />
         <Meta label="上次同步" value={relativeTime(n.snapshot?.fetched_at ?? n.last_seen_at)} />
@@ -181,7 +209,7 @@ export default function NodeDetail() {
 
       <Panel className="overflow-hidden">
         <PanelHeader
-          title="从节点服务"
+          title={n.kind === 'forward-only' ? '从节点服务（不适用）' : '从节点服务'}
           hint={list.length ? `${list.length} 个` : undefined}
         />
         {services.isLoading ? (
@@ -189,7 +217,10 @@ export default function NodeDetail() {
         ) : services.isError ? (
           <ErrorNote error={services.error} />
         ) : list.length === 0 ? (
-          <Empty title="快照中没有服务" hint="确认从节点 APR 在运行，然后点同步" />
+          <Empty
+            title={n.kind === 'forward-only' ? '该节点仅用于 SSH 转发' : '快照中没有服务'}
+            hint={n.kind === 'forward-only' ? '转发记录仍可在下方直接管理' : '确认从节点 APR 在运行，然后点同步'}
+          />
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -208,20 +239,33 @@ export default function NodeDetail() {
                 return (
                   <tr
                     key={svc.id}
-                    className="border-b border-line-soft/60 last:border-0"
+                    className="group border-b border-line-soft/60 transition-colors last:border-0 hover:bg-hover/60"
                   >
                     <td className="py-3 pl-4 align-top">
-                      <div className="font-medium">{svc.name}</div>
-                      <div className="font-mono text-[11px] text-faint">
-                        {svc.service_key}
-                        {svc.instance_key ? `:${svc.instance_key}` : ''}
-                        <span className="text-faint/80"> · {svc.id.slice(0, 16)}</span>
-                      </div>
-                      {svc.start_command && (
-                        <div className="mt-1 max-w-md truncate font-mono text-[10px] text-faint">
-                          {svc.start_command}
+                      <Link
+                        to={`/nodes/${id}/services/${svc.id}`}
+                        className="block min-w-0"
+                      >
+                        <div className="font-medium transition-colors group-hover:text-brand">
+                          {svc.name}
                         </div>
-                      )}
+                        <div className="font-mono text-[11px] text-faint">
+                          {svc.service_key}
+                          {svc.instance_key ? `:${svc.instance_key}` : ''}
+                          <span className="text-faint/80"> · {svc.id.slice(0, 16)}</span>
+                        </div>
+                        {svc.start_command && (
+                          <div className="mt-1 max-w-md truncate font-mono text-[10px] text-faint">
+                            {svc.start_command}
+                          </div>
+                        )}
+                      </Link>
+                      <Link
+                        to={`/nodes/${id}/services/${svc.id}`}
+                        className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-brand hover:underline"
+                      >
+                        查看详情
+                      </Link>
                     </td>
                     <td className="py-3 align-top">
                       <div className="flex flex-col gap-1.5">
@@ -229,8 +273,11 @@ export default function NodeDetail() {
                           <span className="text-xs text-faint">无端口</span>
                         ) : (
                           ports.map((p) => {
-                            const fwd = liveByRemote.get(p.port)
-                            const on = Boolean(fwd)
+                            const fwd = currentByRemote.get(p.port)
+                            const on =
+                              fwd?.state === 'active' ||
+                              fwd?.state === 'starting' ||
+                              fwd?.state === 'reconnecting'
                             return (
                               <div
                                 key={p.port}
@@ -241,14 +288,22 @@ export default function NodeDetail() {
                                 </span>
                                 {on && fwd ? (
                                   <>
-                                    <a
-                                      href={fwd.local_url}
-                                      className="font-mono text-brand hover:underline"
-                                      target="_blank"
-                                      rel="noreferrer"
-                                    >
-                                      localhost:{fwd.local_port}
-                                    </a>
+                                    {fwd.state === 'active' ? (
+                                      <a
+                                        href={fwd.local_url}
+                                        className="inline-flex items-center gap-1 font-mono text-brand hover:underline"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        localhost:{fwd.local_port}
+                                        <ExternalLink size={10} />
+                                      </a>
+                                    ) : (
+                                      <span className="font-mono text-idle">
+                                        localhost:{fwd.local_port} ·{' '}
+                                        {fwd.state === 'reconnecting' ? '等待网络恢复' : '启动中'}
+                                      </span>
+                                    )}
                                     <Button
                                       variant="ghost"
                                       className="!px-2 !py-0.5 text-[11px]"
@@ -259,19 +314,33 @@ export default function NodeDetail() {
                                     </Button>
                                   </>
                                 ) : (
-                                  <Button
-                                    variant="secondary"
-                                    className="!px-2 !py-0.5 text-[11px]"
-                                    disabled={busyKey === `fwd:${p.port}`}
-                                    onClick={() =>
-                                      forwardOn.mutate({
-                                        port: p.port,
-                                        label: `${svc.name} ${p.label}`,
-                                      })
-                                    }
-                                  >
-                                    转发到本机
-                                  </Button>
+                                  <>
+                                    {fwd?.state === 'failed' && (
+                                      <span
+                                        className="text-danger"
+                                        title={fwd.last_error ?? '转发启动失败'}
+                                      >
+                                        上次转发失败
+                                      </span>
+                                    )}
+                                    {fwd?.state === 'stopped' && (
+                                      <span className="text-faint">转发已停止</span>
+                                    )}
+                                    <Button
+                                      variant="secondary"
+                                      className="!px-2 !py-0.5 text-[11px]"
+                                      disabled={busyKey === `fwd:${p.port}`}
+                                      onClick={() =>
+                                        forwardOn.mutate({
+                                          port: p.port,
+                                          label: `${svc.name} ${p.label}`,
+                                          forwardId: fwd?.id,
+                                        })
+                                      }
+                                    >
+                                      {fwd ? '恢复原端口' : '转发到本机'}
+                                    </Button>
+                                  </>
                                 )}
                               </div>
                             )
@@ -315,24 +384,19 @@ export default function NodeDetail() {
 
       <Panel>
         <PanelHeader
-          title="活动转发"
-          hint={
-            (forwards.data ?? []).filter(
-              (f) => f.state === 'active' || f.state === 'starting',
-            ).length
-              ? undefined
-              : '无'
-          }
+          title="本机到该节点的转发"
+          hint={activeForwards.length ? `${activeForwards.length} 条` : '无'}
         />
-        {(forwards.data ?? []).filter(
-          (f) => f.state === 'active' || f.state === 'starting' || f.state === 'failed',
-        ).length === 0 ? (
+        {activeForwards.length === 0 ? (
           <Empty title="当前没有转发" hint="在上方服务端口旁点「转发到本机」" />
         ) : (
           <ul className="divide-y divide-line-soft">
-            {(forwards.data ?? [])
-              .filter((f) => f.state !== 'stopped')
-              .map((f) => (
+            {activeForwards.map((f) => {
+              const service = serviceByRemote.get(f.remote_port)
+              const detailUrl = service
+                ? `/nodes/${id}/services/${service.id}`
+                : null
+              return (
                 <li
                   key={f.id}
                   className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm"
@@ -340,29 +404,60 @@ export default function NodeDetail() {
                   <span className="font-mono text-xs">
                     {f.local_port} → {n.ssh_host}:{f.remote_port}
                   </span>
-                  <span className="text-xs text-faint">{f.label ?? f.id.slice(0, 12)}</span>
+                  {service && detailUrl ? (
+                    <Link
+                      to={detailUrl}
+                      className="text-xs font-medium text-brand hover:underline"
+                    >
+                      {service.name}
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-faint">
+                      {f.label ?? f.id.slice(0, 12)}
+                    </span>
+                  )}
+                  {f.state === 'active' && (
+                    <a
+                      href={f.local_url}
+                      className="inline-flex items-center gap-1 font-mono text-xs text-brand hover:underline"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      打开 localhost:{f.local_port}
+                      <ExternalLink size={10} />
+                    </a>
+                  )}
                   <span
                     className={
                       f.state === 'active'
                         ? 'text-xs text-live'
-                        : f.state === 'failed'
-                          ? 'text-xs text-danger'
-                          : 'text-xs text-idle'
+                        : 'text-xs text-idle'
                     }
                   >
                     {f.state}
                   </span>
-                  {(f.state === 'active' || f.state === 'starting') && (
+                  <span className="text-[11px] text-faint">主节点本机 APR 托管</span>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {detailUrl && (
+                      <Link
+                        to={detailUrl}
+                        className="inline-flex items-center rounded-lg px-2 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
+                      >
+                        服务详情
+                      </Link>
+                    )}
                     <Button
                       variant="ghost"
-                      className="ml-auto !px-2 !py-0.5 text-xs"
+                      className="!px-2 !py-0.5 text-xs"
+                      disabled={busyKey === `fwd-off:${f.id}`}
                       onClick={() => forwardOff.mutate(f.id)}
                     >
                       停止
                     </Button>
-                  )}
+                  </div>
                 </li>
-              ))}
+              )
+            })}
           </ul>
         )}
       </Panel>

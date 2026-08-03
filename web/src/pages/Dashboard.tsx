@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { AlertTriangle } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
-import { count, percent, portRows } from '../lib/format'
+import { count, percent, portRows, serviceProjectKey } from '../lib/format'
 import PortStrip from '../components/PortStrip'
 import {
   Empty,
@@ -118,7 +118,7 @@ export default function Dashboard() {
                     )}
                     {row && (
                       <span className="ml-auto shrink-0 text-[11px] text-faint">
-                        {row.service.agent_project_key}
+                        {serviceProjectKey(row.service)}
                       </span>
                     )}
                   </li>

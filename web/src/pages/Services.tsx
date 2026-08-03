@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, Search } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
-import { relativeTime, servicePorts } from '../lib/format'
+import { relativeTime, serviceAgentLabel, servicePorts, serviceProjectKey } from '../lib/format'
 import EnsureForm from '../components/EnsureForm'
 import { Button, Empty, ErrorNote, Loading, Panel, StatusDot } from '../components/ui'
 
@@ -23,7 +23,7 @@ export default function Services() {
   )
 
   const projects = useMemo(() => {
-    const names = new Set((services.data ?? []).map((s) => s.agent_project_key))
+    const names = new Set((services.data ?? []).map(serviceProjectKey))
     return [...names].sort()
   }, [services.data])
 
@@ -35,14 +35,14 @@ export default function Services() {
         return { service, ports, live: ports.some((p) => listening.has(p.port)) }
       })
       .filter(({ service, ports }) => {
-        if (project && service.agent_project_key !== project) return false
+        if (project && serviceProjectKey(service) !== project) return false
         if (!needle) return true
         return [
           service.name,
           service.service_key,
           service.instance_key,
-          service.agent_project_key,
-          service.agent_type_key,
+          serviceProjectKey(service),
+          serviceAgentLabel(service),
           service.description ?? '',
           ...ports.map((p) => String(p.port)),
         ]
@@ -56,7 +56,7 @@ export default function Services() {
             return a.service.name.localeCompare(b.service.name, 'zh-CN')
           case 'project':
             return (
-              a.service.agent_project_key.localeCompare(b.service.agent_project_key) ||
+              serviceProjectKey(a.service).localeCompare(serviceProjectKey(b.service)) ||
               a.service.name.localeCompare(b.service.name, 'zh-CN')
             )
           case 'updated':
@@ -102,7 +102,7 @@ export default function Services() {
 
         <Button variant="primary" onClick={() => setEnsureOpen(true)} className="shrink-0">
           <Plus size={14} />
-          新建服务
+          首次配置服务
         </Button>
       </div>
 
@@ -115,7 +115,7 @@ export default function Services() {
             hint={
               query || project
                 ? '换个关键词，或清除项目筛选'
-                : '点右上角「新建服务」分配端口，或用 svcctl ensure'
+                : '由 Agent 首次配置服务时分配端口，并写入服务的默认启动配置'
             }
           />
         ) : (
@@ -131,7 +131,7 @@ export default function Services() {
                   onClick={() => setSort('project')}
                   className="hidden md:table-cell"
                 >
-                  项目 / Agent
+                  设备 / 项目 / Agent
                 </SortHeader>
                 <SortHeader active={sort === 'port'} onClick={() => setSort('port')}>
                   端口
@@ -166,9 +166,11 @@ export default function Services() {
                     </Link>
                   </td>
                   <td className="hidden py-2.5 pr-3 text-xs text-muted md:table-cell">
-                    <div className="truncate">{service.agent_project_key}</div>
+                    <div className="truncate">
+                      {serviceProjectKey(service)}
+                    </div>
                     <div className="truncate text-[11px] text-faint">
-                      {service.agent_type_key}
+                      {serviceAgentLabel(service)}
                     </div>
                   </td>
                   <td className="py-2.5 pr-3">

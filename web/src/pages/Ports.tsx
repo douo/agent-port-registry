@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
-import { portRows, truncateMiddle } from '../lib/format'
+import { portRows, serviceProjectKey, truncateMiddle } from '../lib/format'
 import { Empty, ErrorNote, Loading, Panel, PanelHeader, StatusDot } from '../components/ui'
 
 export default function Ports() {
@@ -108,7 +108,7 @@ export default function Ports() {
                         {row.service.name}
                       </Link>
                       <div className="truncate text-[11px] text-faint">
-                        {row.service.agent_project_key}
+                        {serviceProjectKey(row.service)}
                       </div>
                     </td>
                     <td className="hidden py-2.5 pr-3 font-mono text-xs text-muted sm:table-cell">
