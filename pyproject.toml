@@ -1,7 +1,7 @@
 [project]
 name = "apr"
 version = "0.1.0"
-description = "Agent Port Registry — local fixed port allocation and service index for coding agents"
+description = "Agent-first local service registry and persistent HTTP/API port allocator"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
