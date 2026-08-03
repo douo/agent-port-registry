@@ -20,8 +20,8 @@ def repo(tmp_path: Path) -> Repository:
 
 def _ident(key: str = "model-api", instance: str = "main") -> ServiceIdentity:
     return ServiceIdentity.from_raw(
-        agent_type="codex",
-        agent_project_id="proj-1",
+        device_id="NODE_LOCAL",
+        project_id="proj-1",
         service_key=key,
         instance=instance,
     )
@@ -33,7 +33,8 @@ def test_create_and_get_service(repo: Repository) -> None:
     assert got is not None
     assert got.name == "Model API"
     assert got.service_key == "model-api"
-    assert got.agent_type_key == "codex"
+    assert got.device_id == "NODE_LOCAL"
+    assert got.project_key == "proj-1"
 
     by_id = repo.find_service_by_identity(_ident())
     assert by_id is not None
@@ -52,6 +53,7 @@ def test_allocation_claims_and_release(repo: Repository) -> None:
         alloc = repo.create_allocation_with_ports(
             conn,
             service_id=svc.id,
+            device_id=svc.device_id,
             allocation_name="default",
             request_spec=[{"name": "http", "type": "single"}],
             port_rows=[
@@ -87,6 +89,7 @@ def test_allocation_claims_and_release(repo: Repository) -> None:
         repo.create_allocation_with_ports(
             conn,
             service_id=svc2.id,
+            device_id=svc2.device_id,
             allocation_name="default",
             request_spec=[{"name": "http", "type": "single"}],
             port_rows=[
@@ -113,6 +116,7 @@ def test_double_release_raises(repo: Repository) -> None:
         alloc = repo.create_allocation_with_ports(
             conn,
             service_id=svc.id,
+            device_id=svc.device_id,
             allocation_name="default",
             request_spec=[],
             port_rows=[{"resource_name": "p", "port": 21000, "ordinal": 0}],
@@ -137,8 +141,8 @@ def test_list_and_search(repo: Repository) -> None:
     repo.create_service(_ident("model-api"), name="Model API", description="推理接口")
     repo.create_service(
         ServiceIdentity.from_raw(
-            agent_type="claude-code",
-            agent_project_id="p2",
+            device_id="NODE_LOCAL",
+            project_id="p2",
             service_key="frontend",
             instance="dev",
         ),
@@ -150,8 +154,8 @@ def test_list_and_search(repo: Repository) -> None:
     # description has 推理接口 not 模型 — use Model
     found = repo.list_services(query="Model")
     assert len(found) == 1
-    by_agent = repo.list_services(agent_type="codex")
-    assert len(by_agent) == 1
+    by_project = repo.list_services(project_id="proj-1")
+    assert len(by_project) == 1
 
 
 def test_claim_unique_constraint(repo: Repository) -> None:
@@ -161,6 +165,7 @@ def test_claim_unique_constraint(repo: Repository) -> None:
         repo.create_allocation_with_ports(
             conn,
             service_id=s1.id,
+            device_id=s1.device_id,
             allocation_name="default",
             request_spec=[],
             port_rows=[{"resource_name": "p", "port": 22000, "ordinal": 0}],
@@ -170,6 +175,7 @@ def test_claim_unique_constraint(repo: Repository) -> None:
             repo.create_allocation_with_ports(
                 conn,
                 service_id=s2.id,
+                device_id=s2.device_id,
                 allocation_name="default",
                 request_spec=[],
                 port_rows=[{"resource_name": "p", "port": 22000, "ordinal": 0}],
@@ -182,6 +188,7 @@ def test_tombstone_released_name_allows_reuse(repo: Repository) -> None:
         alloc = repo.create_allocation_with_ports(
             conn,
             service_id=svc.id,
+            device_id=svc.device_id,
             allocation_name="default",
             request_spec=[],
             port_rows=[{"resource_name": "p", "port": 23000, "ordinal": 0}],
@@ -192,6 +199,7 @@ def test_tombstone_released_name_allows_reuse(repo: Repository) -> None:
         alloc2 = repo.create_allocation_with_ports(
             conn,
             service_id=svc.id,
+            device_id=svc.device_id,
             allocation_name="default",
             request_spec=[],
             port_rows=[{"resource_name": "p", "port": 23001, "ordinal": 0}],

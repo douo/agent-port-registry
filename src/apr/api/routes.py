@@ -17,7 +17,7 @@ _T = TypeVar("_T")
 
 from apr import __version__
 from apr.domain.errors import AprError, ErrorCode
-from apr.domain.identity import ServiceIdentity
+from apr.domain.identity import ServiceIdentity, require_local_device_id
 from apr.domain.models import (
     AllocationState,
     DeleteRequest,
@@ -142,6 +142,7 @@ def _service_detail(repo, svc, *, process_manager: ProcessManager | None = None)
                         "resource_name": p.resource_name,
                         "port_name": p.port_name,
                         "port": p.port,
+                        "transport": p.transport,
                         "ordinal": p.ordinal,
                     }
                     for p in a.ports
@@ -166,8 +167,8 @@ async def create_service(request: Request) -> JSONResponse:
 
     agent = req.agent
     identity = ServiceIdentity.from_raw(
-        agent_type=agent.type if agent else None,
-        agent_project_id=agent.project_id if agent else None,
+        device_id=require_local_device_id(req.device_id),
+        project_id=req.service.project_id,
         service_key=req.service.key,
         instance=req.service.instance,
     )
@@ -184,6 +185,11 @@ async def create_service(request: Request) -> JSONResponse:
         code_path=req.service.code_path,
         working_directory=req.service.working_directory,
         start_command=req.service.start_command,
+        stop_command=req.service.stop_command,
+        health_check=req.service.health_check,
+        configuration=req.service.configuration,
+        project_origin=req.service.project_origin,
+        registered_by_agent=agent.type if agent else None,
     )
     return JSONResponse(
         _service_detail(repo, svc, process_manager=_process_mgr(request)),
@@ -194,12 +200,14 @@ async def create_service(request: Request) -> JSONResponse:
 async def list_services(request: Request) -> JSONResponse:
     repo = _repo(request)
     q = request.query_params.get("query")
-    agent_type = request.query_params.get("agent_type")
-    agent_project_id = request.query_params.get("agent_project_id")
+    registered_by_agent = request.query_params.get("agent")
+    project_id = request.query_params.get("project_id")
+    device_id = request.query_params.get("device_id")
     services = repo.list_services(
         query=q,
-        agent_type=agent_type,
-        agent_project_id=agent_project_id,
+        registered_by_agent=registered_by_agent,
+        project_id=project_id,
+        device_id=device_id,
     )
     mgr = _process_mgr(request)
     items = [_service_detail(repo, s, process_manager=mgr) for s in services]
@@ -251,6 +259,10 @@ async def patch_service(request: Request) -> JSONResponse:
         code_path=req.code_path,
         working_directory=req.working_directory,
         start_command=req.start_command,
+        stop_command=req.stop_command,
+        health_check=req.health_check,
+        configuration=req.configuration,
+        project_origin=req.project_origin,
     )
     return JSONResponse(updated.model_dump(mode="json"))
 
@@ -261,7 +273,11 @@ async def get_port(request: Request) -> JSONResponse:
         port = int(request.path_params["port"])
     except ValueError as exc:
         raise AprError(ErrorCode.INVALID_REQUEST, "port must be an integer") from exc
-    found = repo.find_by_port(port)
+    found = repo.find_by_port(
+        port,
+        device_id=request.query_params.get("device_id") or "NODE_LOCAL",
+        transport=request.query_params.get("transport") or "tcp",
+    )
     if found is None:
         raise AprError(ErrorCode.SERVICE_NOT_FOUND, f"No service owns port {port}")
     svc = found["service"]
@@ -319,6 +335,7 @@ async def get_allocation(request: Request) -> JSONResponse:
                     "resource_name": p.resource_name,
                     "port_name": p.port_name,
                     "port": p.port,
+                    "transport": p.transport,
                     "ordinal": p.ordinal,
                 }
                 for p in alloc.ports
@@ -354,6 +371,7 @@ async def release_allocation(request: Request) -> JSONResponse:
                     "resource_name": p.resource_name,
                     "port_name": p.port_name,
                     "port": p.port,
+                    "transport": p.transport,
                     "ordinal": p.ordinal,
                 }
                 for p in released.ports
@@ -431,7 +449,11 @@ async def get_pool(request: Request) -> JSONResponse:
     total = max(0, pool.end - pool.start + 1)
     excluded = [p for p in pool.excluded if pool.start <= p <= pool.end]
     usable = total - len(excluded)
-    claimed = sorted(repo.active_claimed_ports())
+    all_claimed = repo.active_claimed_ports()
+    claimed = sorted(p for p in all_claimed if pool.start <= p <= pool.end)
+    managed_outside_pool = sorted(
+        p for p in all_claimed if not (pool.start <= p <= pool.end)
+    )
     listening_in_pool = sorted(
         p for p in probe_listeners() if pool.start <= p <= pool.end
     )
@@ -447,6 +469,7 @@ async def get_pool(request: Request) -> JSONResponse:
             "claimed": claimed,
             "claimed_count": len(claimed),
             "claimed_ranges": _compress_ranges(claimed),
+            "managed_outside_pool": managed_outside_pool,
             "listening_in_pool": listening_in_pool,
             "free": max(0, usable - len(claimed)),
             "utilization": round(len(claimed) / usable, 6) if usable else 0.0,
@@ -468,8 +491,9 @@ async def get_overview(request: Request) -> JSONResponse:
     claimed_ports: list[int] = []
 
     for svc in services:
-        by_agent[svc.agent_type_key] = by_agent.get(svc.agent_type_key, 0) + 1
-        by_project[svc.agent_project_key] = by_project.get(svc.agent_project_key, 0) + 1
+        actor = svc.registered_by_agent or "human"
+        by_agent[actor] = by_agent.get(actor, 0) + 1
+        by_project[svc.project_key] = by_project.get(svc.project_key, 0) + 1
         for alloc in repo.list_allocations_for_service(svc.id):
             if alloc.state == AllocationState.RESERVED:
                 reserved += 1
@@ -484,6 +508,7 @@ async def get_overview(request: Request) -> JSONResponse:
     total = max(0, pool.end - pool.start + 1)
     excluded_in_range = sum(1 for p in pool.excluded if pool.start <= p <= pool.end)
     usable = total - excluded_in_range
+    claimed_in_pool = [p for p in claimed_ports if pool.start <= p <= pool.end]
 
     return JSONResponse(
         {
@@ -505,11 +530,9 @@ async def get_overview(request: Request) -> JSONResponse:
                 "start": pool.start,
                 "end": pool.end,
                 "usable": usable,
-                "free": max(0, usable - len(claimed_ports)),
-                "utilization": round(len(claimed_ports) / usable, 6) if usable else 0.0,
+                "free": max(0, usable - len(claimed_in_pool)),
+                "utilization": round(len(claimed_in_pool) / usable, 6) if usable else 0.0,
             },
-            # Populated from v2 phases 5/6; present from day one so the UI can
-            # render these panels without branching on schema version.
             "nodes": {
                 "total": _table_count(repo, "nodes"),
                 "snapshots": _table_count(repo, "node_snapshots"),

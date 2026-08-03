@@ -34,8 +34,7 @@ packages = ["src/apr"]
 [tool.hatch.build.targets.wheel.sources]
 "src/apr" = "apr"
 
-# schema.sql + migrations/ ship inside the package tree (src/apr/store/);
-# do not force-include them again or hatch fails on duplicate wheel paths.
+# schema.sql ships inside the package tree; hatch includes it with the package.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

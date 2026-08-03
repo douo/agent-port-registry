@@ -37,7 +37,7 @@ def _print_service_table(services: list[dict]) -> None:
         return
     headers = [
         "ID",
-        "Agent",
+        "Registered by",
         "Project",
         "Key",
         "Instance",
@@ -56,8 +56,8 @@ def _print_service_table(services: list[dict]) -> None:
         rows.append(
             [
                 s.get("id", "")[:16],
-                s.get("agent_type_key") or "-",
-                s.get("agent_project_key") or "-",
+                s.get("registered_by_agent") or "human",
+                s.get("project_key") or "-",
                 s.get("service_key") or "",
                 s.get("instance_key") or "",
                 s.get("name") or "",
@@ -84,9 +84,9 @@ def register(app: typer.Typer) -> None:
             Optional[str],
             typer.Option("--agent", help="Filter by agent type key"),
         ] = None,
-        agent_project: Annotated[
+        project: Annotated[
             Optional[str],
-            typer.Option("--agent-project", help="Filter by agent project id"),
+            typer.Option("--project", help="Filter by project id"),
         ] = None,
         table: Annotated[
             bool,
@@ -100,9 +100,9 @@ def register(app: typer.Typer) -> None:
         """List registered services."""
         params: dict[str, str] = {}
         if agent is not None:
-            params["agent_type"] = agent
-        if agent_project is not None:
-            params["agent_project_id"] = agent_project
+            params["agent"] = agent
+        if project is not None:
+            params["project_id"] = project
         data = _get(_cfg(ctx), "/v1/services", params or None)
         if as_json or (not table and not sys_stdout_is_tty_prefer_json()):
             if as_json or not table:

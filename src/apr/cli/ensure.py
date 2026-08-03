@@ -89,13 +89,29 @@ def register(app: typer.Typer) -> None:
             Optional[str],
             typer.Option("--start-command", help="Start command template"),
         ] = None,
+        stop_command: Annotated[
+            Optional[str],
+            typer.Option("--stop-command", help="Stop command template"),
+        ] = None,
+        health_check: Annotated[
+            Optional[str],
+            typer.Option("--health-check", help="Health URL or TCP check description"),
+        ] = None,
+        configuration: Annotated[
+            Optional[str],
+            typer.Option("--configuration", help="Where the Agent persists the port"),
+        ] = None,
+        project_origin: Annotated[
+            Optional[str],
+            typer.Option("--project-origin", help="self-built, third-party-open-source, external"),
+        ] = None,
         agent_type: Annotated[
             Optional[str],
             typer.Option("--agent", help="Agent type (codex, claude-code, …)"),
         ] = None,
-        agent_project: Annotated[
+        project_id: Annotated[
             Optional[str],
-            typer.Option("--agent-project", help="Agent project id"),
+            typer.Option("--project", help="Stable project id"),
         ] = None,
         allocation_name: Annotated[
             str,
@@ -143,18 +159,21 @@ def register(app: typer.Typer) -> None:
                 resources = [{"name": "http", "type": "single"}]
             body = {
                 "agent": (
-                    {"type": agent_type, "project_id": agent_project}
-                    if agent_type or agent_project
-                    else None
+                    {"type": agent_type} if agent_type else None
                 ),
                 "service": {
                     "key": service,
                     "instance": instance,
+                    "project_id": project_id,
+                    "project_origin": project_origin,
                     "name": name or service,
                     "description": description,
                     "code_path": code_path,
                     "working_directory": working_directory,
                     "start_command": start_command,
+                    "stop_command": stop_command,
+                    "health_check": health_check,
+                    "configuration": configuration,
                 },
                 "allocation_name": allocation_name,
                 "resources": resources,

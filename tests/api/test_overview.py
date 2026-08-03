@@ -46,8 +46,13 @@ def _ensure(client: TestClient, key: str, *, project: str = "proj") -> dict:
     resp = client.post(
         "/v1/allocations/ensure",
         json={
-            "agent": {"type": "codex", "project_id": project},
-            "service": {"key": key, "instance": "main", "name": key.title()},
+            "agent": {"type": "codex"},
+            "service": {
+                "key": key,
+                "instance": "main",
+                "project_id": project,
+                "name": key.title(),
+            },
             "resources": [{"name": "http", "type": "single"}],
         },
     )
@@ -75,7 +80,7 @@ def test_overview_on_empty_registry(client: TestClient) -> None:
     assert body["pool"]["usable"] == 98
     assert body["pool"]["utilization"] == 0.0
     # v2 panels answer from day one, before nodes/forwards exist.
-    assert body["nodes"] == {"total": 0, "snapshots": 0}
+    assert body["nodes"] == {"total": 1, "snapshots": 0}
     assert body["forwards"] == {"active": 0}
     assert body["hostname"]
     assert body["version"]

@@ -37,10 +37,11 @@ def test_service_crud(client: TestClient) -> None:
     r = client.post(
         "/v1/services",
         json={
-            "agent": {"type": "codex", "project_id": "p"},
+            "agent": {"type": "codex"},
             "service": {
                 "key": "demo",
                 "instance": "main",
+                "project_id": "p",
                 "name": "Demo",
                 "description": "d1",
             },
@@ -54,8 +55,13 @@ def test_service_crud(client: TestClient) -> None:
     r2 = client.post(
         "/v1/services",
         json={
-            "agent": {"type": "codex", "project_id": "p"},
-            "service": {"key": "demo", "instance": "main", "name": "X"},
+            "agent": {"type": "claude-code"},
+            "service": {
+                "key": "demo",
+                "instance": "main",
+                "project_id": "p",
+                "name": "X",
+            },
         },
     )
     assert r2.status_code == 409
@@ -81,6 +87,25 @@ def test_service_crud(client: TestClient) -> None:
     assert d.status_code == 200
     assert d.json()["deleted"] is True
     assert client.get(f"/v1/services/{sid}").status_code == 404
+
+
+def test_master_cannot_create_service_for_remote_node(client: TestClient) -> None:
+    node = client.post(
+        "/v1/nodes",
+        json={"name": "remote", "ssh_host": "remote-alias"},
+    ).json()
+    response = client.post(
+        "/v1/services",
+        json={
+            "device_id": node["id"],
+            "agent": {"type": "codex"},
+            "service": {"key": "remote-service", "name": "Remote Service"},
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    assert "target node" in response.json()["error"]["message"].lower()
+    assert client.get("/v1/services").json()["services"] == []
 
 
 def test_allocation_crud_and_service_cascade(client: TestClient) -> None:

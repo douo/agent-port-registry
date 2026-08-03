@@ -25,10 +25,11 @@ def _utcnow() -> str:
 def _row_service(row: Any) -> ServiceRecord:
     return ServiceRecord(
         id=row["id"],
-        agent_type=row["agent_type"],
-        agent_project_id=row["agent_project_id"],
-        agent_type_key=row["agent_type_key"],
-        agent_project_key=row["agent_project_key"],
+        device_id=row["device_id"],
+        project_id=row["project_id"],
+        project_key=row["project_key"],
+        registered_by_agent=row["registered_by_agent"],
+        project_origin=row["project_origin"],
         service_key=row["service_key"],
         instance_key=row["instance_key"],
         name=row["name"],
@@ -36,6 +37,9 @@ def _row_service(row: Any) -> ServiceRecord:
         code_path=row["code_path"],
         working_directory=row["working_directory"],
         start_command=row["start_command"],
+        stop_command=row["stop_command"],
+        health_check=row["health_check"],
+        configuration=row["configuration"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -66,14 +70,14 @@ class Repository:
         row = self.db.fetchone(
             """
             SELECT * FROM services
-            WHERE agent_type_key = ?
-              AND agent_project_key = ?
+            WHERE device_id = ?
+              AND project_key = ?
               AND service_key = ?
               AND instance_key = ?
             """,
             (
-                identity.agent_type_key,
-                identity.agent_project_key,
+                identity.device_id,
+                identity.project_key,
                 identity.service_key,
                 identity.instance_key,
             ),
@@ -93,6 +97,11 @@ class Repository:
         code_path: str | None = None,
         working_directory: str | None = None,
         start_command: str | None = None,
+        stop_command: str | None = None,
+        health_check: str | None = None,
+        configuration: str | None = None,
+        project_origin: str | None = None,
+        registered_by_agent: str | None = None,
         conn: Any = None,
     ) -> ServiceRecord:
         now = _utcnow()
@@ -100,25 +109,30 @@ class Repository:
         display_name = name or identity.service_key
         sql = """
             INSERT INTO services (
-                id, agent_type, agent_project_id, agent_type_key, agent_project_key,
-                service_key, instance_key, name, description,
-                code_path, working_directory, start_command,
+                id, device_id, project_id, project_key, service_key, instance_key,
+                registered_by_agent, project_origin, name, description,
+                code_path, working_directory, start_command, stop_command,
+                health_check, configuration,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             service_id,
-            identity.agent_type,
-            identity.agent_project_id,
-            identity.agent_type_key,
-            identity.agent_project_key,
+            identity.device_id,
+            identity.project_id,
+            identity.project_key,
             identity.service_key,
             identity.instance_key,
+            registered_by_agent,
+            project_origin,
             display_name,
             description,
             code_path,
             working_directory,
             start_command,
+            stop_command,
+            health_check,
+            configuration,
             now,
             now,
         )
@@ -138,14 +152,14 @@ class Repository:
         row = conn.execute(
             """
             SELECT * FROM services
-            WHERE agent_type_key = ?
-              AND agent_project_key = ?
+            WHERE device_id = ?
+              AND project_key = ?
               AND service_key = ?
               AND instance_key = ?
             """,
             (
-                identity.agent_type_key,
-                identity.agent_project_key,
+                identity.device_id,
+                identity.project_key,
                 identity.service_key,
                 identity.instance_key,
             ),
@@ -161,6 +175,11 @@ class Repository:
         code_path: str | None = None,
         working_directory: str | None = None,
         start_command: str | None = None,
+        stop_command: str | None = None,
+        health_check: str | None = None,
+        configuration: str | None = None,
+        project_origin: str | None = None,
+        registered_by_agent: str | None = None,
         conn: Any = None,
     ) -> ServiceRecord:
         existing = (
@@ -182,6 +201,16 @@ class Repository:
             fields["working_directory"] = working_directory
         if start_command is not None:
             fields["start_command"] = start_command
+        if stop_command is not None:
+            fields["stop_command"] = stop_command
+        if health_check is not None:
+            fields["health_check"] = health_check
+        if configuration is not None:
+            fields["configuration"] = configuration
+        if project_origin is not None:
+            fields["project_origin"] = project_origin
+        if registered_by_agent is not None:
+            fields["registered_by_agent"] = registered_by_agent
 
         if not fields:
             return existing
@@ -199,22 +228,26 @@ class Repository:
         self,
         *,
         query: str | None = None,
-        agent_type: str | None = None,
-        agent_project_id: str | None = None,
+        registered_by_agent: str | None = None,
+        project_id: str | None = None,
+        device_id: str | None = None,
     ) -> list[ServiceRecord]:
         clauses: list[str] = []
         params: list[Any] = []
-        if agent_type is not None:
-            clauses.append("agent_type_key = ?")
-            params.append(agent_type if agent_type else "human")
-        if agent_project_id is not None:
-            clauses.append("agent_project_key = ?")
-            params.append(agent_project_id if agent_project_id else "-")
+        if registered_by_agent is not None:
+            clauses.append("IFNULL(registered_by_agent, 'human') = ?")
+            params.append(registered_by_agent if registered_by_agent else "human")
+        if project_id is not None:
+            clauses.append("project_key = ?")
+            params.append(project_id if project_id else "-")
+        if device_id is not None:
+            clauses.append("device_id = ?")
+            params.append(device_id)
         if query:
             q = f"%{query}%"
             clauses.append(
                 "(name LIKE ? OR service_key LIKE ? OR IFNULL(description,'') LIKE ? "
-                "OR agent_type_key LIKE ? OR agent_project_key LIKE ? "
+                "OR IFNULL(registered_by_agent,'') LIKE ? OR project_key LIKE ? "
                 "OR IFNULL(code_path,'') LIKE ?)"
             )
             params.extend([q, q, q, q, q, q])
@@ -296,6 +329,7 @@ class Repository:
                 resource_name=r["resource_name"],
                 port_name=r["port_name"],
                 port=r["port"],
+                transport=r["transport"],
                 ordinal=r["ordinal"],
             )
             for r in rows
@@ -310,11 +344,22 @@ class Repository:
             _row_allocation(r, self.list_allocated_ports(r["id"])) for r in rows
         ]
 
-    def active_claimed_ports(self, *, conn: Any = None) -> set[int]:
+    def active_claimed_ports(
+        self,
+        *,
+        device_id: str = "NODE_LOCAL",
+        conn: Any = None,
+    ) -> set[int]:
         if conn is not None:
-            rows = conn.execute("SELECT port FROM active_port_claims").fetchall()
+            rows = conn.execute(
+                "SELECT port FROM active_port_claims WHERE device_id = ?",
+                (device_id,),
+            ).fetchall()
         else:
-            rows = self.db.fetchall("SELECT port FROM active_port_claims")
+            rows = self.db.fetchall(
+                "SELECT port FROM active_port_claims WHERE device_id = ?",
+                (device_id,),
+            )
         return {int(r["port"]) for r in rows}
 
     def create_allocation_with_ports(
@@ -322,6 +367,7 @@ class Repository:
         conn: Any,
         *,
         service_id: str,
+        device_id: str,
         allocation_name: str,
         request_spec: list[dict[str, Any]] | str,
         port_rows: list[dict[str, Any]],
@@ -345,30 +391,40 @@ class Repository:
                 state, sticky, created_at, released_at, release_reason
             ) VALUES (?, ?, ?, ?, 'reserved', ?, ?, NULL, NULL)
             """,
-            (allocation_id, service_id, allocation_name, spec_json, 1 if sticky else 0, now),
+            (
+                allocation_id,
+                service_id,
+                allocation_name,
+                spec_json,
+                1 if sticky else 0,
+                now,
+            ),
         )
         for row in port_rows:
             conn.execute(
                 """
                 INSERT INTO allocated_ports (
-                    allocation_id, resource_name, port_name, port, ordinal
-                ) VALUES (?, ?, ?, ?, ?)
+                    allocation_id, resource_name, port_name, port, transport, ordinal
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     allocation_id,
                     row["resource_name"],
                     row.get("port_name"),
                     int(row["port"]),
+                    row.get("transport", "tcp"),
                     int(row.get("ordinal", 0)),
                 ),
             )
             conn.execute(
                 """
                 INSERT INTO active_port_claims (
-                    port, allocation_id, resource_name, ordinal
-                ) VALUES (?, ?, ?, ?)
+                    device_id, transport, port, allocation_id, resource_name, ordinal
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    device_id,
+                    row.get("transport", "tcp"),
                     int(row["port"]),
                     allocation_id,
                     row["resource_name"],
@@ -413,10 +469,17 @@ class Repository:
             assert record is not None
             return record
 
-    def find_by_port(self, port: int) -> dict[str, Any] | None:
+    def find_by_port(
+        self,
+        port: int,
+        *,
+        device_id: str = "NODE_LOCAL",
+        transport: str = "tcp",
+    ) -> dict[str, Any] | None:
         """Lookup active claim by port; include service + allocation."""
         claim = self.db.fetchone(
-            "SELECT * FROM active_port_claims WHERE port = ?", (port,)
+            "SELECT * FROM active_port_claims WHERE device_id = ? AND transport = ? AND port = ?",
+            (device_id, transport, port),
         )
         if claim is None:
             # Fall back to historical allocated_ports (may be released).
@@ -426,10 +489,15 @@ class Repository:
                 FROM allocated_ports ap
                 JOIN allocations a ON a.id = ap.allocation_id
                 WHERE ap.port = ?
+                  AND ap.transport = ?
+                  AND EXISTS (
+                      SELECT 1 FROM services s
+                      WHERE s.id = a.service_id AND s.device_id = ?
+                  )
                 ORDER BY CASE a.state WHEN 'reserved' THEN 0 ELSE 1 END, a.created_at DESC
                 LIMIT 1
                 """,
-                (port,),
+                (port, transport, device_id),
             )
             if hist is None:
                 return None

@@ -60,27 +60,34 @@ def register(app: typer.Typer) -> None:
             Optional[str], typer.Option("--working-directory")
         ] = None,
         start_command: Annotated[Optional[str], typer.Option("--start-command")] = None,
+        stop_command: Annotated[Optional[str], typer.Option("--stop-command")] = None,
+        health_check: Annotated[Optional[str], typer.Option("--health-check")] = None,
+        configuration: Annotated[Optional[str], typer.Option("--configuration")] = None,
+        project_origin: Annotated[Optional[str], typer.Option("--project-origin")] = None,
         agent: Annotated[Optional[str], typer.Option("--agent")] = None,
-        agent_project: Annotated[
-            Optional[str], typer.Option("--agent-project")
+        project: Annotated[
+            Optional[str], typer.Option("--project")
         ] = None,
     ) -> None:
         """Create a service index entry without allocating ports."""
         cfg: Config = ctx.obj["config"]
         body: dict[str, Any] = {
             "agent": (
-                {"type": agent, "project_id": agent_project}
-                if agent or agent_project
-                else None
+                {"type": agent} if agent else None
             ),
             "service": {
                 "key": service,
                 "instance": instance,
+                "project_id": project,
                 "name": name or service,
                 "description": description,
                 "code_path": code_path,
                 "working_directory": working_directory,
                 "start_command": start_command,
+                "stop_command": stop_command,
+                "health_check": health_check,
+                "configuration": configuration,
+                "project_origin": project_origin,
             },
         }
         _req(cfg, "POST", "/v1/services", json_body=body)
@@ -98,17 +105,17 @@ def register(app: typer.Typer) -> None:
     def service_list(
         ctx: typer.Context,
         agent: Annotated[Optional[str], typer.Option("--agent")] = None,
-        agent_project: Annotated[
-            Optional[str], typer.Option("--agent-project")
+        project: Annotated[
+            Optional[str], typer.Option("--project")
         ] = None,
         query: Annotated[Optional[str], typer.Option("--query", "-q")] = None,
     ) -> None:
         """List services (same data as `svcctl list`)."""
         params: dict[str, str] = {}
         if agent is not None:
-            params["agent_type"] = agent
-        if agent_project is not None:
-            params["agent_project_id"] = agent_project
+            params["agent"] = agent
+        if project is not None:
+            params["project_id"] = project
         if query is not None:
             params["query"] = query
         _req(ctx.obj["config"], "GET", "/v1/services", params=params or None)
@@ -125,6 +132,10 @@ def register(app: typer.Typer) -> None:
             Optional[str], typer.Option("--working-directory")
         ] = None,
         start_command: Annotated[Optional[str], typer.Option("--start-command")] = None,
+        stop_command: Annotated[Optional[str], typer.Option("--stop-command")] = None,
+        health_check: Annotated[Optional[str], typer.Option("--health-check")] = None,
+        configuration: Annotated[Optional[str], typer.Option("--configuration")] = None,
+        project_origin: Annotated[Optional[str], typer.Option("--project-origin")] = None,
     ) -> None:
         """Update service index metadata (does not change ports)."""
         cfg: Config = ctx.obj["config"]
@@ -136,6 +147,10 @@ def register(app: typer.Typer) -> None:
                 "code_path": code_path,
                 "working_directory": working_directory,
                 "start_command": start_command,
+                "stop_command": stop_command,
+                "health_check": health_check,
+                "configuration": configuration,
+                "project_origin": project_origin,
             }.items()
             if v is not None
         }

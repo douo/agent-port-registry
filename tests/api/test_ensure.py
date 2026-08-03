@@ -41,10 +41,12 @@ def client(tmp_path: Path):
 
 def _ensure_body(**overrides):
     body = {
-        "agent": {"type": "codex", "project_id": "proj-1"},
+        "agent": {"type": "codex"},
         "service": {
             "key": "model-api",
             "instance": "main",
+            "project_id": "proj-1",
+            "project_origin": "self-built",
             "name": "Model API",
             "description": "本地模型接口",
             "code_path": "/tmp/model",
@@ -241,7 +243,7 @@ def test_list_and_search(client: TestClient) -> None:
     resp = client.get("/v1/services", params={"query": "Model"})
     assert resp.status_code == 200
     assert len(resp.json()["services"]) >= 1
-    resp2 = client.get("/v1/services", params={"agent_type": "codex"})
+    resp2 = client.get("/v1/services", params={"agent": "codex"})
     assert len(resp2.json()["services"]) >= 1
 
 
@@ -255,8 +257,31 @@ def test_ac012_human_no_agent(client: TestClient) -> None:
     assert resp.status_code == 200
     sid = resp.json()["service_id"]
     detail = client.get(f"/v1/services/{sid}").json()
-    assert detail["agent_type_key"] == "human"
-    assert detail["agent_project_key"] == "-"
+    assert detail["registered_by_agent"] is None
+    assert detail["project_key"] == "-"
+
+
+def test_agent_is_actor_not_service_identity(client: TestClient) -> None:
+    body = _ensure_body()
+    first = client.post("/v1/allocations/ensure", json=body).json()
+    body["agent"] = {"type": "claude-code"}
+    second = client.post("/v1/allocations/ensure", json=body).json()
+    assert second["service_id"] == first["service_id"]
+    detail = client.get(f"/v1/services/{first['service_id']}").json()
+    assert detail["registered_by_agent"] == "claude-code"
+
+
+def test_master_cannot_ensure_for_remote_node(client: TestClient) -> None:
+    node = client.post(
+        "/v1/nodes",
+        json={"name": "remote", "ssh_host": "remote-alias"},
+    ).json()
+    remote_body = {**_ensure_body(), "device_id": node["id"]}
+    response = client.post("/v1/allocations/ensure", json=remote_body)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    assert "target node" in response.json()["error"]["message"].lower()
+    assert client.get("/v1/services").json()["services"] == []
 
 
 def test_ac015_multi_allocation(client: TestClient) -> None:

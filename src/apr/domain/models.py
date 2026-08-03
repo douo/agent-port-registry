@@ -33,6 +33,7 @@ class WithinRange(BaseModel):
 class ResourceSpec(BaseModel):
     name: str = Field(min_length=1)
     type: ResourceType
+    transport: Literal["tcp", "udp"] = "tcp"
     size: int | None = None
     count: int | None = None
     contiguous: bool = False
@@ -59,21 +60,26 @@ class ResourceSpec(BaseModel):
 
 class AgentContext(BaseModel):
     type: str | None = None
-    project_id: str | None = None
 
 
 class ServiceInput(BaseModel):
     key: str = Field(min_length=1)
     instance: str | None = "default"
+    project_id: str | None = None
+    project_origin: Literal["self-built", "third-party-open-source", "external"] | None = None
     name: str | None = None
     description: str | None = None
     code_path: str | None = None
     working_directory: str | None = None
     start_command: str | None = None
+    stop_command: str | None = None
+    health_check: str | None = None
+    configuration: str | None = None
 
 
 class EnsureRequest(BaseModel):
     agent: AgentContext | None = None
+    device_id: str = "NODE_LOCAL"
     service: ServiceInput
     allocation_name: str = "default"
     resources: list[ResourceSpec] = Field(min_length=1)
@@ -94,6 +100,7 @@ class PortAvailability(BaseModel):
 class EnsureResponse(BaseModel):
     service_id: str
     allocation_id: str
+    device_id: str
     existing: bool
     sticky: bool = True
     ports: dict[str, int] = Field(default_factory=dict)
@@ -107,12 +114,17 @@ class ServiceUpdateRequest(BaseModel):
     code_path: str | None = None
     working_directory: str | None = None
     start_command: str | None = None
+    stop_command: str | None = None
+    health_check: str | None = None
+    configuration: str | None = None
+    project_origin: Literal["self-built", "third-party-open-source", "external"] | None = None
 
 
 class ServiceCreateRequest(BaseModel):
     """Create a service index entry without allocating ports."""
 
     agent: AgentContext | None = None
+    device_id: str = "NODE_LOCAL"
     service: ServiceInput
 
 
@@ -126,10 +138,11 @@ class DeleteRequest(BaseModel):
 
 class ServiceRecord(BaseModel):
     id: str
-    agent_type: str | None = None
-    agent_project_id: str | None = None
-    agent_type_key: str
-    agent_project_key: str
+    device_id: str
+    project_id: str | None = None
+    project_key: str
+    registered_by_agent: str | None = None
+    project_origin: str | None = None
     service_key: str
     instance_key: str
     name: str
@@ -137,6 +150,9 @@ class ServiceRecord(BaseModel):
     code_path: str | None = None
     working_directory: str | None = None
     start_command: str | None = None
+    stop_command: str | None = None
+    health_check: str | None = None
+    configuration: str | None = None
     created_at: str
     updated_at: str
 
@@ -146,6 +162,7 @@ class AllocatedPortRecord(BaseModel):
     resource_name: str
     port_name: str | None = None
     port: int
+    transport: Literal["tcp", "udp"] = "tcp"
     ordinal: int = 0
 
 
@@ -169,6 +186,7 @@ def resource_specs_to_canonical(resources: list[ResourceSpec]) -> list[dict[str,
         item: dict[str, Any] = {
             "name": r.name,
             "type": str(r.type),
+            "transport": r.transport,
         }
         if r.type == ResourceType.BLOCK:
             item["size"] = r.size

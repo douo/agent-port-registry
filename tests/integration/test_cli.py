@@ -65,10 +65,11 @@ def daemon(tmp_path: Path):
 
 def test_cli_ensure_json_stdin(daemon: Path) -> None:
     body = {
-        "agent": {"type": "codex", "project_id": "p1"},
+        "agent": {"type": "codex"},
         "service": {
             "key": "model-api",
             "instance": "main",
+            "project_id": "p1",
             "name": "Model API",
             "description": "test",
         },

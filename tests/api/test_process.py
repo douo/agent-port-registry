@@ -1,8 +1,9 @@
-"""Process management API (v2 phase 4)."""
+"""Process management API."""
 
 from __future__ import annotations
 
 import time
+import sys
 from pathlib import Path
 
 import pytest
@@ -63,15 +64,16 @@ def _ensure(
     *,
     key: str = "echo-svc",
     start_command: str | None = (
-        "python -c \"print('hello-from-apr'); import time; time.sleep(30)\""
+        f"{sys.executable} -c \"print('hello-from-apr'); import time; time.sleep(30)\""
     ),
     working_directory: str | None = None,
 ) -> dict:
     body = {
-        "agent": {"type": "test", "project_id": "pm"},
+        "agent": {"type": "test"},
         "service": {
             "key": key,
             "instance": "main",
+            "project_id": "pm",
             "name": key,
             "start_command": start_command,
             "working_directory": working_directory,
@@ -187,7 +189,7 @@ def test_port_placeholder_rendered(client_pm) -> None:
     out = Path(cfg.state_dir) / "port-out.txt"
     # After render, the command becomes write('<port number>').
     # f-string {{{{ports.http}}}} → literal {{ports.http}} in the stored command.
-    cmd = f'python -c "open(r\'{out}\',\'w\').write(\'{{{{ports.http}}}}\')"'
+    cmd = f'{sys.executable} -c "open(r\'{out}\',\'w\').write(\'{{{{ports.http}}}}\')"'
     created = _ensure(client, key="port-echo", start_command=cmd)
     sid = created["service_id"]
     port = created["ports"]["http"]
@@ -196,7 +198,7 @@ def test_port_placeholder_rendered(client_pm) -> None:
     assert start.status_code == 201, start.text
     body = start.json()
     assert body["command"] == (
-        f'python -c "open(r\'{out}\',\'w\').write(\'{port}\')"'
+        f'{sys.executable} -c "open(r\'{out}\',\'w\').write(\'{port}\')"'
     )
     # One-shot success: exited immediately with 0, not left "running".
     assert body["state"] == "exited"
