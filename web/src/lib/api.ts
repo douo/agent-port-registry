@@ -16,6 +16,7 @@ export interface Overview {
   }
   allocations: { reserved: number; released: number }
   ports: { claimed: number; live: number; idle: number; idle_ports: number[] }
+  listening: OverviewListeningItem[]
   pool: {
     start: number
     end: number
@@ -24,8 +25,26 @@ export interface Overview {
     utilization: number
   }
   nodes: { total: number; snapshots: number }
-  forwards: { active: number }
+  forwards: { active: number; items: OverviewForward[] }
   features?: { process_management?: boolean }
+}
+
+export interface OverviewListeningItem {
+  port: number
+  service_id: string | null
+  service_name: string | null
+  project_key: string | null
+  label: string | null
+  pid: number | null
+  command: string | null
+}
+
+export interface ForwardServiceSummary {
+  id: string | null
+  name: string | null
+  service_key: string | null
+  instance_key: string | null
+  project_key: string | null
 }
 
 export type ProcessState = 'starting' | 'running' | 'stopped' | 'failed' | 'exited'
@@ -299,6 +318,14 @@ export interface PortForward {
   stopped_at: string | null
   alive: boolean
   local_url: string
+}
+
+/** Overview rows: a forward plus its slave node and matched service context. */
+export interface OverviewForward extends PortForward {
+  node_name: string | null
+  node_kind: string | null
+  ssh_host: string | null
+  service: ForwardServiceSummary | null
 }
 
 /* ------------------------------------------------------------------ errors */

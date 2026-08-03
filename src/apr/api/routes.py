@@ -505,6 +505,7 @@ async def get_overview(request: Request) -> JSONResponse:
     reserved = 0
     released = 0
     claimed_ports: list[int] = []
+    service_by_port: dict[int, dict[str, Any]] = {}
 
     for svc in services:
         actor = svc.registered_by_agent or "human"
@@ -513,13 +514,54 @@ async def get_overview(request: Request) -> JSONResponse:
         for alloc in repo.list_allocations_for_service(svc.id):
             if alloc.state == AllocationState.RESERVED:
                 reserved += 1
-                claimed_ports.extend(p.port for p in alloc.ports)
+                for p in alloc.ports:
+                    claimed_ports.append(p.port)
+                    service_by_port.setdefault(
+                        p.port,
+                        {
+                            "service_id": svc.id,
+                            "service_name": svc.name,
+                            "project_key": svc.project_key,
+                            "label": p.port_name or p.resource_name,
+                        },
+                    )
             else:
                 released += 1
 
     live_ports = [p for p in claimed_ports if p in listeners]
     # Claimed but nothing is listening: registered yet not actually running.
     idle_ports = [p for p in claimed_ports if p not in listeners]
+    # Currently listening local services: port-level rows with registry context.
+    listening = [
+        {
+            "port": port,
+            **service_by_port.get(port, {}),
+            "pid": listeners[port].pid,
+            "command": listeners[port].command,
+        }
+        for port in sorted(set(live_ports))
+    ]
+
+    # Master-owned SSH forwards, enriched with the slave node and, when the
+    # snapshot knows the target, the slave-side service summary.
+    fm = _forward_mgr(request)
+    nm = _node_mgr(request)
+    fm.reconcile()
+    forward_items: list[dict[str, Any]] = []
+    for fwd in fm.list_forwards():
+        node = nm.get(fwd.node_id)
+        service = (
+            _snapshot_service_for_port(nm.get_snapshot(node.id), fwd.remote_port)
+            if node is not None
+            else None
+        )
+        item = fwd.to_dict()
+        item["node_id"] = fwd.node_id
+        item["node_name"] = node.name if node is not None else None
+        item["node_kind"] = node.kind if node is not None else None
+        item["ssh_host"] = node.ssh_host if node is not None else None
+        item["service"] = service
+        forward_items.append(item)
 
     total = max(0, pool.end - pool.start + 1)
     excluded_in_range = sum(1 for p in pool.excluded if pool.start <= p <= pool.end)
@@ -542,6 +584,7 @@ async def get_overview(request: Request) -> JSONResponse:
                 "idle": len(idle_ports),
                 "idle_ports": sorted(idle_ports),
             },
+            "listening": listening,
             "pool": {
                 "start": pool.start,
                 "end": pool.end,
@@ -563,6 +606,7 @@ async def get_overview(request: Request) -> JSONResponse:
                         or {"c": 0}
                     )["c"]
                 ),
+                "items": forward_items,
             },
             "features": {
                 "process_management": bool(
@@ -571,6 +615,33 @@ async def get_overview(request: Request) -> JSONResponse:
             },
         }
     )
+
+
+def _snapshot_service_for_port(
+    snapshot: dict[str, Any] | None,
+    port: int,
+) -> dict[str, Any] | None:
+    """Find the slave service owning ``port`` inside a cached node snapshot."""
+    payload = (snapshot or {}).get("payload") or {}
+    if not isinstance(payload, dict):
+        return None
+    for svc in payload.get("services") or []:
+        if not isinstance(svc, dict):
+            continue
+        for alloc in svc.get("allocations") or []:
+            if not isinstance(alloc, dict) or alloc.get("state") != AllocationState.RESERVED:
+                continue
+            for p in alloc.get("ports") or []:
+                if isinstance(p, dict) and isinstance(p.get("port"), int):
+                    if p["port"] == port:
+                        return {
+                            "id": svc.get("id"),
+                            "name": svc.get("name"),
+                            "service_key": svc.get("service_key"),
+                            "instance_key": svc.get("instance_key"),
+                            "project_key": svc.get("project_key"),
+                        }
+    return None
 
 
 async def start_service_process(request: Request) -> JSONResponse:

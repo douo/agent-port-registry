@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import socket
 
 import pytest
 from starlette.testclient import TestClient
@@ -81,7 +83,8 @@ def test_overview_on_empty_registry(client: TestClient) -> None:
     assert body["pool"]["utilization"] == 0.0
     # v2 panels answer from day one, before nodes/forwards exist.
     assert body["nodes"] == {"total": 1, "snapshots": 0}
-    assert body["forwards"] == {"active": 0}
+    assert body["forwards"] == {"active": 0, "items": []}
+    assert body["listening"] == []
     assert body["hostname"]
     assert body["version"]
 
@@ -116,6 +119,105 @@ def test_overview_reflects_release(client: TestClient) -> None:
     assert body["allocations"] == {"reserved": 0, "released": 1}
     assert body["ports"]["claimed"] == 0
     assert body["services"]["total"] == 1
+
+
+def test_overview_lists_listening_services(client: TestClient) -> None:
+    created = _ensure(client, "alpha", project="proj-a")
+    port = created["ports"]["http"]
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", port))
+        server.listen()
+        body = client.get("/v1/overview").json()
+
+    assert body["ports"]["live"] == 1
+    assert [item["port"] for item in body["listening"]] == [port]
+    item = body["listening"][0]
+    assert item["service_name"] == "Alpha"
+    assert item["service_id"]
+    assert item["project_key"] == "proj-a"
+    assert item["label"] == "http"
+
+
+def test_overview_enriches_forwards_with_node_service(client: TestClient) -> None:
+    node = client.post(
+        "/v1/nodes",
+        json={"name": "slave-a", "ssh_host": "p44.local"},
+    ).json()
+    nid = node["id"]
+    repo = client.app.state.apr["repo"]
+    repo.db.execute(
+        """
+        INSERT INTO node_snapshots (node_id, fetched_at, status, payload_json, error, duration_ms)
+        VALUES (?, '2026-08-03T00:00:00Z', 'ok', ?, NULL, 5)
+        """,
+        (
+            nid,
+            json.dumps(
+                {
+                    "services": [
+                        {
+                            "id": "SVC_REMOTE1",
+                            "name": "remote-api",
+                            "service_key": "remote-api",
+                            "instance_key": "main",
+                            "project_key": "lab",
+                            "allocations": [
+                                {
+                                    "id": "ALLOC_1",
+                                    "allocation_name": "default",
+                                    "state": "reserved",
+                                    "ports": [
+                                        {
+                                            "resource_name": "http",
+                                            "port_name": "http",
+                                            "port": 20010,
+                                            "ordinal": 0,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+        ),
+    )
+    repo.db.execute(
+        """
+        INSERT INTO port_forwards (
+            id, node_id, remote_port, remote_host, local_port, label,
+            pid, state, last_error, auto_reconnect, auto_start,
+            created_at, started_at, stopped_at
+        ) VALUES (
+            'FWD_1', ?, 20010, '127.0.0.1', 22000, 'remote-api http',
+            NULL, 'stopped', NULL, 1, 1,
+            '2026-08-03T00:00:00Z', NULL, '2026-08-03T00:00:01Z'
+        )
+        """,
+        (nid,),
+    )
+
+    body = client.get("/v1/overview").json()
+
+    assert body["forwards"]["active"] == 0
+    items = body["forwards"]["items"]
+    assert len(items) == 1
+    fwd = items[0]
+    assert fwd["node_id"] == nid
+    assert fwd["node_name"] == "slave-a"
+    assert fwd["ssh_host"] == "p44.local"
+    assert fwd["local_port"] == 22000
+    assert fwd["remote_port"] == 20010
+    assert fwd["state"] == "stopped"
+    assert "22000" in fwd["local_url"]
+    assert fwd["service"] == {
+        "id": "SVC_REMOTE1",
+        "name": "remote-api",
+        "service_key": "remote-api",
+        "instance_key": "main",
+        "project_key": "lab",
+    }
 
 
 def test_pool_endpoint(client: TestClient) -> None:
