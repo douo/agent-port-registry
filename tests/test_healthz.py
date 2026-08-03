@@ -9,7 +9,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from apr.api.app import create_app
-from apr.config import load_config
+from apr.config import MAX_UNIX_SOCKET_PATH_BYTES, load_config
 from apr.cli.client import health_check, is_registry_up
 
 
@@ -28,7 +28,8 @@ def test_load_config_respects_data_dir(tmp_path: Path) -> None:
     cfg = load_config(data_dir=tmp_path / "apr-data")
     assert cfg.data_dir == tmp_path / "apr-data"
     assert cfg.db_path == tmp_path / "apr-data" / "apr.db"
-    assert cfg.socket_path == tmp_path / "apr-data" / "apr.sock"
+    assert cfg.socket_path.name.endswith(".sock")
+    assert len(os.fsencode(cfg.socket_path)) <= MAX_UNIX_SOCKET_PATH_BYTES
 
 
 def test_load_config_env_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

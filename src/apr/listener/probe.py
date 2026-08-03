@@ -1,9 +1,11 @@
-"""Probe local TCP listeners (Linux)."""
+"""Probe local TCP listeners (Linux /proc, with a macOS lsof fallback)."""
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -18,6 +20,63 @@ class ListenerInfo:
 
 
 _HEX_IP_PORT = re.compile(r"^([0-9A-Fa-f]+):([0-9A-Fa-f]+)$")
+
+
+def _parse_lsof_listeners(text: str, *, resolve_pid: bool = True) -> dict[int, ListenerInfo]:
+    """Parse ``lsof -Fpcn`` output into the same shape as the /proc probe."""
+    out: dict[int, ListenerInfo] = {}
+    pid: int | None = None
+    command: str | None = None
+    for raw in text.splitlines():
+        if len(raw) < 2:
+            continue
+        field, value = raw[0], raw[1:]
+        if field == "p":
+            try:
+                pid = int(value)
+            except ValueError:
+                pid = None
+            command = None
+            continue
+        if field == "c":
+            command = value or None
+            continue
+        if field != "n":
+            continue
+        # Values are normally *:80, 127.0.0.1:8080, or [::1]:8080.
+        _, separator, port_text = value.rpartition(":")
+        if not separator:
+            continue
+        try:
+            port = int(port_text)
+        except ValueError:
+            continue
+        out.setdefault(
+            port,
+            ListenerInfo(
+                port=port,
+                pid=pid if resolve_pid else None,
+                command=command if resolve_pid else None,
+            ),
+        )
+    return out
+
+
+def _probe_lsof_listeners(*, resolve_pid: bool = True) -> dict[int, ListenerInfo]:
+    lsof = shutil.which("lsof")
+    if lsof is None:
+        return {}
+    try:
+        proc = subprocess.run(
+            [lsof, "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpcn"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return _parse_lsof_listeners(proc.stdout or "", resolve_pid=resolve_pid)
 
 
 def _parse_proc_net_tcp(path: Path) -> list[tuple[int, int]]:
@@ -106,10 +165,14 @@ def probe_listeners(
 
     Note: multiple processes may share a port with SO_REUSEPORT; we keep one.
     """
-    paths = list(proc_net_paths) if proc_net_paths is not None else [
-        Path("/proc/net/tcp"),
-        Path("/proc/net/tcp6"),
-    ]
+    using_system_paths = proc_net_paths is None
+    paths = (
+        list(proc_net_paths)
+        if proc_net_paths is not None
+        else [Path("/proc/net/tcp"), Path("/proc/net/tcp6")]
+    )
+    if using_system_paths and not any(path.is_file() for path in paths):
+        return _probe_lsof_listeners(resolve_pid=resolve_pid)
     port_inodes: dict[int, int] = {}
     for path in paths:
         for port, inode in _parse_proc_net_tcp(path):

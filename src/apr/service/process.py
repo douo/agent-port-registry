@@ -1,4 +1,4 @@
-"""Managed process lifecycle for services.start_command (v2 phase 4).
+"""Managed process lifecycle for services.start_command.
 
 Safety: the whole feature is gated by ``process_management.enabled`` (default
 false). When enabled the registry can spawn arbitrary shell commands that were
@@ -142,12 +142,13 @@ def _pid_alive(pid: int | None) -> bool:
         return False
 
     state = _proc_state_letter(pid)
-    if state is None:
-        return False
     if state == "Z":
         # Zombie we are not the parent of (or reap failed); treat as dead.
         return False
 
+    # Linux /proc gives us the state above. macOS and other Unix platforms do
+    # not expose /proc, so fall through to the portable signal-0 probe. A
+    # missing pid is still distinguished by ProcessLookupError.
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -339,7 +340,7 @@ class ProcessManager:
                 start_new_session=True,
                 close_fds=True,
             )
-        # Legacy: thin daemon env + /bin/sh -c
+        # Optional non-login-shell mode for tightly controlled daemon environments.
         return subprocess.Popen(
             command,
             shell=True,

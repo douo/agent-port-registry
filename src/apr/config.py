@@ -3,16 +3,32 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-DEFAULT_PORT_POOL_START = 20000
-DEFAULT_PORT_POOL_END = 39999
+DEFAULT_PORT_POOL_START = 41000
+DEFAULT_PORT_POOL_END = 45999
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 17989
+MAX_UNIX_SOCKET_PATH_BYTES = 100
+
+
+def _safe_socket_path(path: Path, *, data_dir: Path) -> Path:
+    """Keep Unix socket paths below macOS's sockaddr_un limit.
+
+    Test directories and deeply nested workspaces can easily exceed the 104
+    byte macOS limit.  The fallback is deterministic so daemon and client pick
+    the same endpoint, and lives in a per-user mode-0700 directory.
+    """
+    if len(os.fsencode(path)) <= MAX_UNIX_SOCKET_PATH_BYTES:
+        return path
+    digest = hashlib.sha256(os.fsencode(data_dir.resolve())).hexdigest()[:20]
+    return Path(tempfile.gettempdir()) / f"apr-{os.getuid()}" / f"{digest}.sock"
 
 
 def _xdg_data_home() -> Path:
@@ -71,10 +87,12 @@ class Config:
         self.data_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.state_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.config_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.socket_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         # Tighten permissions if already existed with looser mode.
         try:
             os.chmod(self.data_dir, 0o700)
             os.chmod(self.state_dir, 0o700)
+            os.chmod(self.socket_path.parent, 0o700)
         except OSError:
             pass
 
@@ -187,13 +205,16 @@ def load_config(
         cfg.socket_path = Path(env["APR_SOCKET"])
     elif file_data.get("socket_path"):
         cfg.socket_path = Path(str(file_data["socket_path"]))
+    cfg.socket_path = _safe_socket_path(cfg.socket_path, data_dir=cfg.data_dir)
 
-    if env.get("APR_HTTP_HOST"):
+    http_host_from_env = bool(env.get("APR_HTTP_HOST"))
+    http_port_from_env = bool(env.get("APR_HTTP_PORT"))
+    if http_host_from_env:
         cfg.http_host = env["APR_HTTP_HOST"]
     elif file_data.get("http_host"):
         cfg.http_host = str(file_data["http_host"])
 
-    if env.get("APR_HTTP_PORT"):
+    if http_port_from_env:
         cfg.http_port = int(env["APR_HTTP_PORT"])
     elif file_data.get("http_port") is not None:
         cfg.http_port = int(file_data["http_port"])
@@ -212,9 +233,9 @@ def load_config(
     if isinstance(web_raw, dict):
         if "enabled" in web_raw:
             cfg.web_enabled = bool(web_raw["enabled"])
-        if web_raw.get("host"):
+        if web_raw.get("host") and not http_host_from_env:
             cfg.http_host = str(web_raw["host"])
-        if web_raw.get("port") is not None:
+        if web_raw.get("port") is not None and not http_port_from_env:
             cfg.http_port = int(web_raw["port"])
     if env.get("APR_WEB") in ("1", "true", "True", "yes"):
         cfg.web_enabled = True

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import socket
 
-from apr.listener.probe import _parse_proc_net_tcp, probe_listeners
+from apr.listener.probe import _parse_lsof_listeners, _parse_proc_net_tcp, probe_listeners
 
 
 def test_parse_proc_net_tcp_listen(tmp_path: Path) -> None:
@@ -37,3 +38,25 @@ def test_probe_listeners_from_files(tmp_path: Path) -> None:
     assert 20001 in listeners
     assert listeners[20001].inode == 42
     assert listeners[20001].pid is None
+
+
+def test_parse_lsof_listeners() -> None:
+    listeners = _parse_lsof_listeners(
+        "p42\ncpython\nf5\nn127.0.0.1:20001\nf6\nn[::1]:20001\n"
+        "p43\ncssh\nf7\nn*:39999\n"
+    )
+
+    assert listeners[20001].pid == 42
+    assert listeners[20001].command == "python"
+    assert listeners[39999].pid == 43
+    assert listeners[39999].command == "ssh"
+
+
+def test_probe_listeners_detects_real_local_socket() -> None:
+    """Listener discovery works on Linux /proc and macOS lsof alike."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = int(server.getsockname()[1])
+
+        assert port in probe_listeners()
