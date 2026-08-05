@@ -30,6 +30,11 @@ Agent/用户 ──默认启动命令──> 服务（不访问 APR）
 - SSH control plane：使用 SSH config 别名访问节点。
 - AutoSSH supervisor：持久化、建立并恢复节点到本机的端口转发规则。
 
+守护进程必须继承可执行用户的正常终端环境。macOS LaunchAgent 通过该用户的登录且
+交互式 shell（`$SHELL -lic`）启动 APR，不能依赖 launchd 的精简默认 `PATH`。APR
+托管的服务命令仍各自通过用户 shell 启动，使手动运行、自启动和恢复路径使用相同的
+工具链及环境变量。
+
 ## 3. 数据模型
 
 ### Node

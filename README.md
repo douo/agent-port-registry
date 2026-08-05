@@ -141,8 +141,18 @@ kill "$(cat ~/.local/state/apr/apr.pid)"
 ```
 
 需要登录自启时，建议先执行 `uv tool install -e .`，然后创建
-`~/Library/LaunchAgents/io.github.douo.apr.plist`。`ProgramArguments` 中必须使用
-`command -v svcctl` 返回的绝对路径；launchd 下应以前台模式运行：
+`~/Library/LaunchAgents/io.github.douo.apr.plist`。launchd 不会读取用户的
+`.zprofile`、`.zshrc`、`.bash_profile` 或 `.bashrc`，其默认 `PATH` 也通常不包含
+Homebrew。先用以下命令确认当前账户的登录 shell：
+
+```bash
+dscl . -read "/Users/$USER" UserShell
+command -v svcctl
+```
+
+`ProgramArguments` 必须先通过该登录 shell 的 `-lic` 加载用户终端环境，再用
+`exec "$@"` 启动 APR。把下面两个占位路径替换为以上命令返回的绝对路径；launchd
+下 APR 应以前台模式运行：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -154,10 +164,19 @@ kill "$(cat ~/.local/state/apr/apr.pid)"
   <string>io.github.douo.apr</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/ABSOLUTE/PATH/TO/LOGIN-SHELL</string>
+    <string>-lic</string>
+    <string>exec "$@"</string>
+    <string>apr-launchd</string>
     <string>/ABSOLUTE/PATH/TO/svcctl</string>
     <string>serve</string>
     <string>--foreground</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TERM</key>
+    <string>dumb</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -173,7 +192,13 @@ launchctl kickstart -k "gui/$(id -u)/io.github.douo.apr"
 uv run svcctl status
 ```
 
-当前 CLI 不自动安装 launchd plist；上述配置显式保留可审计的绝对执行路径。
+`apr-launchd` 是 shell 的 `$0` 占位值，实际命令从后面的 `svcctl` 开始。`TERM=dumb`
+避免无 TTY 的后台 shell 初始化时调用 `tput` 产生噪声。该方式会在 APR 每次启动时
+重新加载用户登录及交互式 shell 配置；它不会复制某个已打开终端中临时 `export`、
+但未写入 shell 配置的变量。
+
+当前 CLI 不自动安装 launchd plist；上述配置显式保留可审计的绝对执行路径，并让
+APR、AutoSSH 及 APR 托管的本地服务使用一致的用户终端环境。
 
 ### Linux 初始化
 
@@ -338,6 +363,10 @@ Host p44
 父进程异常退出后仍会在原本机端口重建。转发只判断 SSH 主机连接和本机监听，不探测
 目标服务端口，远端服务可以由用户独立启停。`forward-only` 主机只是 SSH 目标，不会
 被当作运行 APR 的从节点或远程服务管理入口。
+
+macOS 上通过 launchd 运行 APR 时，LaunchAgent 必须按上面的模板通过用户登录 shell
+启动。否则 Homebrew 安装的 `autossh` 以及只在 shell 配置中声明的工具和环境变量对
+APR 不可见，转发恢复和本地服务启动可能在前台终端正常、在登录自启时失败。
 
 ## 环境变量
 
