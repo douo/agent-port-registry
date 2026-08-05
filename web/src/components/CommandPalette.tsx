@@ -5,6 +5,7 @@ import { Command } from 'cmdk'
 import { Boxes, LayoutDashboard, Network } from 'lucide-react'
 import { api, queryKeys } from '../lib/api'
 import { serviceAgentLabel, servicePorts, serviceProjectKey } from '../lib/format'
+import PortSummary, { shouldSummarizePorts } from './PortSummary'
 
 interface Props {
   open: boolean
@@ -91,11 +92,15 @@ export default function CommandPalette({ open, onOpenChange }: Props) {
                   <span className="text-[11px] text-faint">
                     {serviceProjectKey(service)}
                   </span>
-                  {ports.map((p) => (
-                    <span key={p.port} className="chip">
-                      {p.port}
-                    </span>
-                  ))}
+                  {shouldSummarizePorts(ports) ? (
+                    <PortSummary ports={ports} />
+                  ) : (
+                    ports.map((p) => (
+                      <span key={p.port} className="chip">
+                        {p.port}
+                      </span>
+                    ))
+                  )}
                 </span>
               </Item>
             ))}

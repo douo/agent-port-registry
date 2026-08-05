@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowLeft,
+  ChevronDown,
+  ChevronUp,
   Eye,
   ExternalLink,
   Pencil,
@@ -26,6 +28,7 @@ import {
 import { absoluteTime, relativeTime, serviceAgentLabel, serviceProjectKey } from '../lib/format'
 import EditServiceForm from '../components/EditServiceForm'
 import EnsureForm from '../components/EnsureForm'
+import PortSummary, { shouldSummarizePorts } from '../components/PortSummary'
 import {
   Button,
   ConfirmDialog,
@@ -64,6 +67,9 @@ export default function ServiceDetail() {
   const [releaseTarget, setReleaseTarget] = useState<Allocation | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [actionError, setActionError] = useState<unknown>(null)
+  const [portsExpanded, setPortsExpanded] = useState(false)
+
+  useEffect(() => setPortsExpanded(false), [id, nodeId])
 
   const service = useQuery({
     queryKey: remote ? queryKeys.nodeService(nodeId, id) : queryKeys.service(id),
@@ -234,6 +240,18 @@ export default function ServiceDetail() {
   const listeners = new Map((listenersQuery.data ?? []).map((l) => [l.port, l]))
   const reserved = s.allocations.filter((a) => a.state === 'reserved')
   const released = s.allocations.filter((a) => a.state === 'released')
+  const activePorts = reserved
+    .flatMap((allocation) =>
+      allocation.ports.map((port) => ({
+        allocation,
+        port,
+        label: port.port_name ?? port.resource_name,
+      })),
+    )
+    .sort((a, b) => a.port.port - b.port.port)
+  const activePortSummary = activePorts.map(({ port, label }) => ({ port: port.port, label }))
+  const portsFoldable = shouldSummarizePorts(activePortSummary)
+  const showPortTable = !portsFoldable || portsExpanded
 
   const portMap: Record<string, number> = {}
   for (const alloc of reserved) {
@@ -387,14 +405,32 @@ export default function ServiceDetail() {
       <Panel>
         <PanelHeader
           title={remote ? '端口与本机入口' : '端口'}
-          hint={`${Object.keys(portMap).length} 个生效端口`}
+          hint={`${activePorts.length} 个生效端口`}
+          action={
+            portsFoldable ? (
+              <Button
+                variant="ghost"
+                className="!px-2 !py-1 text-xs"
+                aria-expanded={portsExpanded}
+                aria-controls="active-port-list"
+                onClick={() => setPortsExpanded((expanded) => !expanded)}
+              >
+                {portsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                {portsExpanded ? '收起' : '展开'}
+              </Button>
+            ) : undefined
+          }
         />
         {reserved.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-faint">
             该服务当前没有生效的端口分配
           </div>
+        ) : !showPortTable ? (
+          <div id="active-port-list" className="px-4 py-4">
+            <PortSummary ports={activePortSummary} />
+          </div>
         ) : (
-          <table className="w-full text-sm">
+          <table id="active-port-list" className="w-full text-sm">
             <thead>
               <tr className="border-b border-line-soft text-left text-xs text-faint">
                 <th className="py-2 pl-4 font-normal">名称</th>
@@ -410,8 +446,7 @@ export default function ServiceDetail() {
               </tr>
             </thead>
             <tbody>
-              {reserved.flatMap((alloc) =>
-                alloc.ports.map((p) => {
+              {activePorts.map(({ allocation: alloc, port: p }) => {
                   const listener = listeners.get(p.port)
                   const forward = liveForwards.get(p.port)
                   const lastFailed = failedForwards.get(p.port)
@@ -523,8 +558,7 @@ export default function ServiceDetail() {
                       </td>
                     </tr>
                   )
-                }),
-              )}
+                })}
             </tbody>
           </table>
         )}
@@ -723,8 +757,13 @@ export default function ServiceDetail() {
       <Panel>
         <PanelHeader title="分配" hint={`生效 ${reserved.length} · 历史 ${released.length}`} />
         <ul className="divide-y divide-line-soft">
-          {s.allocations.map((alloc) => (
-            <li key={alloc.id} className="px-4 py-3">
+          {s.allocations.map((alloc) => {
+            const allocationPorts = alloc.ports.map((port) => ({
+              port: port.port,
+              label: port.port_name ?? port.resource_name,
+            }))
+            return (
+              <li key={alloc.id} className="px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="chip">{alloc.id}</span>
                 <span className="text-sm">{alloc.allocation_name}</span>
@@ -755,19 +794,24 @@ export default function ServiceDetail() {
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
-                {alloc.ports.map((p) => (
-                  <span key={`${p.resource_name}-${p.ordinal}`} className="chip">
-                    {p.port_name ?? p.resource_name}={p.port}/{p.transport ?? 'tcp'}
-                  </span>
-                ))}
+                {shouldSummarizePorts(allocationPorts) ? (
+                  <PortSummary ports={allocationPorts} />
+                ) : (
+                  alloc.ports.map((p) => (
+                    <span key={`${p.resource_name}-${p.ordinal}`} className="chip">
+                      {p.port_name ?? p.resource_name}={p.port}/{p.transport ?? 'tcp'}
+                    </span>
+                  ))
+                )}
               </div>
               {alloc.release_reason && (
                 <div className="mt-2 text-[11px] text-faint">
                   释放原因：{alloc.release_reason}
                 </div>
               )}
-            </li>
-          ))}
+              </li>
+            )
+          })}
         </ul>
       </Panel>
 

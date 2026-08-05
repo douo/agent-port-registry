@@ -18,6 +18,7 @@ import {
   type Service,
 } from '../lib/api'
 import { relativeTime, servicePorts } from '../lib/format'
+import PortSummary, { shouldSummarizePorts } from '../components/PortSummary'
 import {
   Button,
   ConfirmDialog,
@@ -296,6 +297,12 @@ export default function NodeDetail() {
                 const proc = svc.process
                 const running =
                   proc?.state === 'running' || proc?.state === 'starting' || proc?.alive
+                const forwardedCount = ports.filter((p) => {
+                  const state = currentByRemote.get(p.port)?.state
+                  return (
+                    state === 'active' || state === 'starting' || state === 'reconnecting'
+                  )
+                }).length
                 return (
                   <tr
                     key={svc.id}
@@ -331,6 +338,17 @@ export default function NodeDetail() {
                       <div className="flex flex-col gap-1.5">
                         {ports.length === 0 ? (
                           <span className="text-xs text-faint">无端口</span>
+                        ) : shouldSummarizePorts(ports) ? (
+                          <div className="flex flex-col items-start gap-1.5">
+                            <Link to={`/nodes/${id}/services/${svc.id}`}>
+                              <PortSummary ports={ports} />
+                            </Link>
+                            {forwardedCount > 0 && (
+                              <span className="text-[11px] text-live">
+                                {forwardedCount} 个已转发
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           ports.map((p) => {
                             const fwd = currentByRemote.get(p.port)

@@ -5,6 +5,7 @@ import { ExternalLink, Eye, LoaderCircle, Play, Plus, Search, Square } from 'luc
 import { api, errorLabel, invalidateServiceViews, queryKeys } from '../lib/api'
 import { relativeTime, serviceAgentLabel, servicePorts, serviceProjectKey } from '../lib/format'
 import EnsureForm from '../components/EnsureForm'
+import PortSummary, { shouldSummarizePorts } from '../components/PortSummary'
 import { Button, Empty, ErrorNote, Loading, Panel, StatusBadge } from '../components/ui'
 
 type SortKey = 'port' | 'name' | 'project' | 'updated'
@@ -249,6 +250,8 @@ export default function Services() {
                         <div className="flex flex-wrap gap-1">
                           {ports.length === 0 ? (
                             <span className="text-xs text-faint">无</span>
+                          ) : shouldSummarizePorts(ports) ? (
+                            <PortSummary ports={ports} />
                           ) : (
                             ports.map((p) => {
                               const portLive = listeners.has(p.port)
