@@ -184,3 +184,21 @@ def test_remote_start_stop_uses_process_cli(client: TestClient) -> None:
         assert r.status_code == 200
         args = mock_ssh.call_args[0][1]
         assert args[-3:] == ["process", "stop", "SVC_X"]
+
+        mock_ssh.return_value = (
+            0,
+            json.dumps(
+                {
+                    "service_id": "SVC_X",
+                    "log_path": "/tmp/SVC_X.log",
+                    "cleared": True,
+                    "process": None,
+                }
+            ),
+            "",
+        )
+        r = client.post(f"/v1/nodes/{nid}/services/SVC_X/logs/clear")
+        assert r.status_code == 200
+        assert r.json()["cleared"] is True
+        args = mock_ssh.call_args[0][1]
+        assert args[-3:] == ["process", "clear-logs", "SVC_X"]

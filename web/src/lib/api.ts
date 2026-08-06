@@ -85,6 +85,13 @@ export interface ServiceLogs {
   process: ManagedProcess | null
 }
 
+export interface ClearServiceLogsResult {
+  service_id: string
+  log_path: string
+  cleared: boolean
+  process: ManagedProcess | null
+}
+
 export type AllocationState = 'reserved' | 'released'
 export type ResourceType = 'single' | 'block' | 'count'
 
@@ -487,6 +494,10 @@ export const api = {
 
   serviceLogs: (id: string, tail = 200) =>
     request<ServiceLogs>(`/v1/services/${id}/logs?tail=${tail}`),
+  clearServiceLogs: (id: string) =>
+    request<ClearServiceLogsResult>(`/v1/services/${id}/logs/clear`, {
+      method: 'POST',
+    }),
 
   serviceProcess: (id: string) =>
     request<{
@@ -529,6 +540,11 @@ export const api = {
   nodeServiceLogs: (nodeId: string, serviceId: string, tail = 200) =>
     request<ServiceLogs>(
       `/v1/nodes/${nodeId}/services/${serviceId}/logs?tail=${tail}`,
+    ),
+  clearNodeServiceLogs: (nodeId: string, serviceId: string) =>
+    request<ClearServiceLogsResult>(
+      `/v1/nodes/${nodeId}/services/${serviceId}/logs/clear`,
+      { method: 'POST' },
     ),
 
   // Forwards (autossh)

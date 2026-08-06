@@ -137,6 +137,16 @@ def test_start_stop_logs_roundtrip(client_pm) -> None:
     assert "hello-from-apr" in "\n".join(log_body["lines"])
     assert Path(log_body["log_path"]).is_file()
 
+    clear = client.post(f"/v1/services/{sid}/logs/clear")
+    assert clear.status_code == 200, clear.text
+    clear_body = clear.json()
+    assert clear_body["cleared"] is True
+    assert clear_body["log_path"] == log_body["log_path"]
+    assert clear_body["process"]["state"] == "running"
+    cleared_logs = client.get(f"/v1/services/{sid}/logs", params={"tail": 50})
+    assert cleared_logs.status_code == 200, cleared_logs.text
+    assert cleared_logs.json()["lines"] == []
+
     stop = client.post(f"/v1/services/{sid}/stop")
     assert stop.status_code == 200, stop.text
     assert stop.json()["state"] == "stopped"

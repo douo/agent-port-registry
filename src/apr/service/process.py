@@ -697,13 +697,10 @@ class ProcessManager:
             stopped=True,
         )
 
-    def logs(self, service_id: str, *, tail: int = 200) -> dict[str, Any]:
-        """Return the last ``tail`` lines of the service log file."""
-        if tail < 1:
-            raise AprError(ErrorCode.INVALID_REQUEST, "tail must be >= 1")
-        if tail > 10_000:
-            raise AprError(ErrorCode.INVALID_REQUEST, "tail must be <= 10000")
-
+    def _log_path_for_service(
+        self, service_id: str
+    ) -> tuple[Path, ManagedProcess | None]:
+        """Resolve the current log path after checking that the service exists."""
         svc = self.repo.get_service(service_id)
         if svc is None:
             raise AprError(ErrorCode.SERVICE_NOT_FOUND, f"Service not found: {service_id}")
@@ -712,9 +709,17 @@ class ProcessManager:
         self.reconcile(service_id)
         proc = self.get_live(service_id) or self.get_latest(service_id)
         if proc and proc.log_path:
-            path = Path(proc.log_path)
-        else:
-            path = Path(self.config.state_dir) / "logs" / f"{service_id}.log"
+            return Path(proc.log_path), proc
+        return Path(self.config.state_dir) / "logs" / f"{service_id}.log", proc
+
+    def logs(self, service_id: str, *, tail: int = 200) -> dict[str, Any]:
+        """Return the last ``tail`` lines of the service log file."""
+        if tail < 1:
+            raise AprError(ErrorCode.INVALID_REQUEST, "tail must be >= 1")
+        if tail > 10_000:
+            raise AprError(ErrorCode.INVALID_REQUEST, "tail must be <= 10000")
+
+        path, proc = self._log_path_for_service(service_id)
 
         if not path.is_file():
             return {
@@ -731,6 +736,28 @@ class ProcessManager:
             "log_path": str(path),
             "tail": tail,
             "lines": lines,
+            "process": proc.to_dict() if proc else None,
+        }
+
+    def clear_logs(self, service_id: str) -> dict[str, Any]:
+        """Truncate a service log without stopping its managed process."""
+        path, proc = self._log_path_for_service(service_id)
+        try:
+            path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            # Truncate in place so a currently running process that has the file
+            # open keeps writing to the same log after the clear operation.
+            with path.open("w", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            raise AprError(
+                ErrorCode.INTERNAL_ERROR,
+                f"Failed to clear service log {path}: {exc}",
+            ) from exc
+
+        return {
+            "service_id": service_id,
+            "log_path": str(path),
+            "cleared": True,
             "process": proc.to_dict() if proc else None,
         }
 

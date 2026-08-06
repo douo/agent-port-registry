@@ -1,4 +1,4 @@
-"""svcctl process start|stop|logs — for local use and remote SSH control plane."""
+"""svcctl process start|stop|logs|clear-logs — local and remote control plane."""
 
 from __future__ import annotations
 
@@ -67,6 +67,15 @@ def register(app: typer.Typer) -> None:
         data = _request(
             _cfg(ctx), "GET", f"/v1/services/{service_id}/logs", params={"tail": n}
         )
+        typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+
+    @proc.command("clear-logs")
+    def clear_logs_cmd(
+        ctx: typer.Context,
+        service_id: Annotated[str, typer.Argument(help="Service id")],
+    ) -> None:
+        """Clear a service log without stopping its process."""
+        data = _request(_cfg(ctx), "POST", f"/v1/services/{service_id}/logs/clear")
         typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
 
     @proc.command("status")

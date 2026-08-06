@@ -31,9 +31,9 @@ APR 不是“每次启动前都必须调用”的中央端口服务，也不会�
 |---|---|
 | 固定端口 | TCP/UDP 单端口、多个命名端口、连续端口块；默认池 `41000–45999` |
 | 服务索引 | 项目、来源、描述、路径、启动/停止命令、健康检查、配置位置和登记 Agent |
-| 本地进程 | 可选的 start/stop/status/logs；`{{ports.http}}` 等占位符会替换为已分配端口 |
+| 本地进程 | 可选的 start/stop/status/logs/clear-logs；`{{ports.http}}` 等占位符会替换为已分配端口 |
 | Web UI | 服务详情、实时监听、控制台、分配历史、节点详情及本机转发直达链接 |
-| SSH 节点 | 主节点通过 SSH 查看从节点完整服务信息，并代理用户明确触发的启停与日志操作 |
+| SSH 节点 | 主节点通过 SSH 查看从节点完整服务信息，并代理用户明确触发的启停与日志清理操作 |
 | 本机转发 | 主节点管理 SSH/AutoSSH 本地端口转发；断线时显示 `reconnecting` 并自动恢复 |
 
 ## 主从节点权限边界
@@ -43,7 +43,7 @@ APR 不是“每次启动前都必须调用”的中央端口服务，也不会�
 | 操作 | 主节点 | 目标节点本地 APR / Agent |
 |---|---|---|
 | 列表、详情、状态、日志 | 通过 SSH 读取 | 权威数据源 |
-| 已登记服务 start/stop | 用户明确触发后通过 SSH 代理 | 实际执行并记录 |
+| 已登记服务 start/stop/clear-logs | 用户明确触发后通过 SSH 代理 | 实际执行；clear-logs 只截断目标日志 |
 | `ensure`、端口分配 | 不得替从节点执行 | Agent 在目标节点本地执行 |
 | 服务 CRUD、release | 不得修改从节点 | 只修改本节点注册表 |
 | SSH 本地转发 | 在主节点创建、启动和停止 | 从节点只是目标，不保存转发记录 |
@@ -298,6 +298,7 @@ uv run svcctl check-all
 uv run svcctl process start <service_id>
 uv run svcctl process status <service_id>
 uv run svcctl process logs <service_id> --tail 200
+uv run svcctl process clear-logs <service_id>
 uv run svcctl process stop <service_id>
 
 # 配置单个服务随本机 APR 启动；关闭使用 --no-auto-start

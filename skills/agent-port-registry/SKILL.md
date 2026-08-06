@@ -143,8 +143,9 @@ EOF
   never call remote `ensure` or mutate a slave registry.
 - Service identity inside one APR is project + service key + instance; the APR
   instance itself defines the node scope.
-- A master may read slave data and proxy explicitly requested start/stop through
-  SSH, but may not change slave metadata, allocations, config, database, or APR package.
+- A master may read slave data and proxy explicitly requested start/stop or clear
+  logs through SSH, but may not change slave metadata, allocations, config,
+  database, or APR package.
 - SSH local forwards belong to the master; a slave is only the routing target.
 - A stopped service retains its allocation.
 - Release or reconfigure only after an explicit user request.

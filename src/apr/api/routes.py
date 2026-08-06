@@ -667,6 +667,12 @@ async def get_service_logs(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
+async def clear_service_logs(request: Request) -> JSONResponse:
+    service_id = request.path_params["service_id"]
+    payload = _process_mgr(request).clear_logs(service_id)
+    return JSONResponse(payload)
+
+
 async def get_service_process(request: Request) -> JSONResponse:
     """Latest managed process plus current managed/external runtime observation."""
     service_id = request.path_params["service_id"]
@@ -853,6 +859,15 @@ async def node_service_logs(request: Request) -> JSONResponse:
     return JSONResponse(data)
 
 
+async def clear_node_service_logs(request: Request) -> JSONResponse:
+    node_id = request.path_params["node_id"]
+    service_id = request.path_params["service_id"]
+    data = await _to_thread(
+        _node_mgr(request).clear_service_logs, node_id, service_id
+    )
+    return JSONResponse(data)
+
+
 # ── Port forwards (autossh) ───────────────────────────────────
 
 
@@ -967,6 +982,11 @@ def api_routes() -> list[Route]:
             methods=["GET"],
         ),
         Route(
+            "/v1/services/{service_id}/logs/clear",
+            clear_service_logs,
+            methods=["POST"],
+        ),
+        Route(
             "/v1/services/{service_id}/process",
             get_service_process,
             methods=["GET"],
@@ -998,6 +1018,11 @@ def api_routes() -> list[Route]:
             "/v1/nodes/{node_id}/services/{service_id}/logs",
             node_service_logs,
             methods=["GET"],
+        ),
+        Route(
+            "/v1/nodes/{node_id}/services/{service_id}/logs/clear",
+            clear_node_service_logs,
+            methods=["POST"],
         ),
         Route("/v1/nodes/{node_id}/forwards", create_forward, methods=["POST"]),
         # Forwards

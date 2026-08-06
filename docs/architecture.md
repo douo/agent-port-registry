@@ -109,7 +109,8 @@ APR 不修改任意第三方文件。Agent 在目标节点和用户授权的项�
 主节点允许的远端调用：
 
 - `list`、`inspect-service`、`process status`、`process logs` 等只读查询；
-- 用户在 UI 明确触发后，对已登记服务执行 `process start/stop`。
+- 用户在 UI 明确触发后，对已登记服务执行 `process start/stop/clear-logs`。其中
+  `clear-logs` 只截断从节点上的目标日志文件，不修改服务登记、端口或配置。
 
 主节点禁止的远端调用：
 

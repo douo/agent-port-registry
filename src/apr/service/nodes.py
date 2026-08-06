@@ -1,7 +1,7 @@
 """Master-side node registry: SSH control plane to slave APR instances.
 
 Slaves stay on Unix socket only; the master runs ``ssh … -- <apr_command> …``
-(BatchMode, no local shell) to list services and proxy process start/stop.
+(BatchMode, no local shell) to list services and proxy process start/stop/log clearing.
 """
 
 from __future__ import annotations
@@ -436,6 +436,10 @@ class NodeManager:
     def stop_service(self, node_id: str, service_id: str) -> Any:
         node = self.require(node_id)
         return self.remote_json(node, "process", "stop", service_id)
+
+    def clear_service_logs(self, node_id: str, service_id: str) -> Any:
+        node = self.require(node_id)
+        return self.remote_json(node, "process", "clear-logs", service_id)
 
     def service_logs(self, node_id: str, service_id: str, *, tail: int = 200) -> Any:
         node = self.require(node_id)
