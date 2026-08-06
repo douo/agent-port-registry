@@ -66,7 +66,6 @@ export default function ServiceDetail() {
   const [ensureOpen, setEnsureOpen] = useState(false)
   const [releaseTarget, setReleaseTarget] = useState<Allocation | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const [clearLogsOpen, setClearLogsOpen] = useState(false)
   const [actionError, setActionError] = useState<unknown>(null)
   const [portsExpanded, setPortsExpanded] = useState(false)
 
@@ -148,7 +147,6 @@ export default function ServiceDetail() {
       remote ? api.clearNodeServiceLogs(nodeId, id) : api.clearServiceLogs(id),
     onSuccess: async () => {
       setActionError(null)
-      setClearLogsOpen(false)
       await qc.invalidateQueries({
         queryKey: remote
           ? queryKeys.nodeServiceLogs(nodeId, id)
@@ -411,8 +409,7 @@ export default function ServiceDetail() {
         {s.description && <p className="mt-2 text-sm text-muted">{s.description}</p>}
         {Boolean(startMut.isError || stopMut.isError || actionError) &&
           releaseTarget == null &&
-          !deleteOpen &&
-          !clearLogsOpen && (
+          !deleteOpen && (
             <div className="mt-3">
               <FormError error={actionError ?? startMut.error ?? stopMut.error} />
             </div>
@@ -609,7 +606,7 @@ export default function ServiceDetail() {
                     disabled={clearLogsMut.isPending}
                     onClick={() => {
                       setActionError(null)
-                      setClearLogsOpen(true)
+                      clearLogsMut.mutate()
                     }}
                   >
                     <Trash2 size={13} />
@@ -784,25 +781,6 @@ export default function ServiceDetail() {
           </Field>
         </div>
       </Panel>
-
-      <ConfirmDialog
-        open={clearLogsOpen}
-        onClose={() => {
-          if (!clearLogsMut.isPending) setClearLogsOpen(false)
-        }}
-        onConfirm={() => clearLogsMut.mutate()}
-        title="清除服务日志"
-        body={
-          <>
-            将清空服务 <span className="font-mono text-fg">{s.name}</span> 的历史日志；
-            当前运行中的服务不会停止，之后产生的新日志仍会继续写入。
-          </>
-        }
-        confirmLabel="确认清除"
-        danger
-        loading={clearLogsMut.isPending}
-        error={actionError}
-      />
 
       <Panel>
         <PanelHeader title="分配" hint={`生效 ${reserved.length} · 历史 ${released.length}`} />
